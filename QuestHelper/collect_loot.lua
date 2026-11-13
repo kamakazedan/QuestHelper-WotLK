@@ -28,6 +28,7 @@ local function MembersUpdate()
   
   --QuestHelper:TextOut("MU start")
   members = {} -- we burn a table every time this updates, but whatever
+  members_refs = {} -- this one was never cleared, so it grew on every roster change
   members_count = 0
   if GetNumRaidMembers() > 0 then
     -- we is in a raid
@@ -51,12 +52,14 @@ local function MembersUpdate()
         --QuestHelper:TextOut(string.format("party member %s added", UnitName(ite)))
       end
     end
-    members[UnitGUID("player")] = true
+    local me = UnitGUID("player")
+    if me then members[me] = true end -- the client forgets who we are during a loading screen, and that's exactly when the group gets shuffled around. PLAYER_ENTERING_WORLD puts us back.
     table.insert(members_refs, "player")
     --QuestHelper:TextOut(string.format("player %s added", UnitName("player"))) 
   else
     -- we is alone ;.;
-    if UnitGUID("player") then members[UnitGUID("player")] = true end -- it's possible that we haven't logged in entirely yet
+    local me = UnitGUID("player")
+    if me then members[me] = true end -- it's possible that we haven't logged in entirely yet
     table.insert(members_refs, "player")
     --QuestHelper:TextOut(string.format("player %s added as %s", UnitName("player"), tostring(UnitGUID("player"))))
     alone = true
@@ -188,7 +191,7 @@ local function SkinnableflagsTooltipy(self, ...)
     for i = 3, lines do
       --QuestHelper:TextOut(_G["GameTooltipTextLeft" .. tostring(i)]:GetText())
       local skeen = skintypes[_G["GameTooltipTextLeft" .. tostring(i)]:GetText()]
-      if skeen then QuestHelper: Assert(not skintype) skintype = skeen end
+      if skeen then skintype = skeen end
     end
     
     if not QHC.monster[cid] then QHC.monster[cid] = {} end
@@ -517,9 +520,11 @@ local function LootOpened()
   local items = {}
   items.gold = 0
   for i = 1, GetNumLootItems() do
-    _, name, quant, _ = GetLootSlotInfo(i)
-    link = GetLootSlotLink(i)
-    if quant == 0 then
+    local _, name, quant = GetLootSlotInfo(i)
+    local link = GetLootSlotLink(i)
+    if not name then
+      -- this slot's already empty (auto-loot, area loot, someone else was quicker)
+    elseif quant == 0 then
       -- moneys
       local _, _, amount = string.find(name, Patterns.GOLD_AMOUNT)
       if amount then items.gold = items.gold + tonumber(amount) * 10000 end
@@ -531,7 +536,7 @@ local function LootOpened()
       if amount then items.gold = items.gold + tonumber(amount) * 1 end
     else
       local itype = GetItemType(link)
-      items[itype] = (items[itype] or 0) + quant
+      if itype and quant then items[itype] = (items[itype] or 0) + quant end
     end
   end
   

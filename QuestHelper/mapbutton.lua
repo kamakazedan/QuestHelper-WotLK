@@ -214,12 +214,30 @@ end
 
 
 -------------------------------------------------------------------------------------
+-- Put the button beside Zoom Out. That row is otherwise empty on the large map, whereas the corner of the map itself is where other map addons tend to put their controls.
+local function PlaceMapButton()
+  local button = QuestHelper.MapButton
+  if not button then return end
+  
+  button:ClearAllPoints()
+  if WorldMapZoomOutButton and WorldMapZoomOutButton:IsShown() then
+    button:SetPoint("LEFT", WorldMapZoomOutButton, "RIGHT", 8, 0)
+    button:SetFrameLevel(WorldMapZoomOutButton:GetFrameLevel()+1)
+  else
+    -- The windowed map doesn't have that row.
+    button:SetPoint("TOPRIGHT", WorldMapButton, "TOPRIGHT", -10, -10)
+    button:SetFrameLevel(WorldMapButton:GetFrameLevel()+1)
+  end
+  button:SetFrameStrata("FULLSCREEN")
+end
+
+-------------------------------------------------------------------------------------
 -- Set up the Map Button
 function QuestHelper:InitMapButton()
   
   if not self.MapButton then
     -- Create the button
-    local button = CreateFrame("Button", "QuestHelperWorldMapButton", WorldMapButton, "UIPanelButtonTemplate")
+    local button = CreateFrame("Button", "QuestHelperWorldMapButton", WorldMapFrame, "UIPanelButtonTemplate")  -- not on the map itself, which changes size
     
     -- Assign the font QuestHelper selected for the currect locale.
     if button.GetFont then
@@ -252,21 +270,14 @@ function QuestHelper:InitMapButton()
     -- Add Hide handler, so we can dismiss any menus when map is closed
     QH_Hook(button, "OnHide", QuestHelper_WorldMapHidden)
 
-    -- Position it on the World Map frame
---~     if Cartographer then
---~         -- If Cartographer is in use, coordinate with their buttons.
-            -- Trouble is, this makes Cartographer's buttons conflict with the Zone Map dropdown.
-            -- Re-enable this if Cartographer ever learns to work with the Zone Map dropdown.
---~         Cartographer:AddMapButton(button, 3)
---~     else
-        -- Otherwise, just put it in the upper right corner
-        button:SetPoint("TOPRIGHT", WorldMapButton, "TOPRIGHT", -10, -10)
-        button:SetFrameLevel(WorldMapButton:GetFrameLevel()+1)
-        button:SetFrameStrata("FULLSCREEN")
---    end
-
     -- Save the button so we can reference it later if need be
     self.MapButton = button
+    
+    -- The row it sits in comes and goes as the map changes size.
+    PlaceMapButton()
+    button:HookScript("OnShow", PlaceMapButton)
+    if WorldMap_ToggleSizeUp then hooksecurefunc("WorldMap_ToggleSizeUp", function () QH_SafeCall(PlaceMapButton) end) end
+    if WorldMap_ToggleSizeDown then hooksecurefunc("WorldMap_ToggleSizeDown", function () QH_SafeCall(PlaceMapButton) end) end
   else
     -- User must be toggling the button.  We've already got it, so just show it.
     self.MapButton:Show()

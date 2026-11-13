@@ -79,6 +79,7 @@ tracker:SetPoint("CENTER", minbutton)
 
 function minbutton:moved()
   local x, y = self:GetCenter()
+  if not x or not y then return end  -- the client doesn't always know where a frame is yet
   local w, h = UIParent:GetWidth(), UIParent:GetHeight()
   local anchor = (y < h*.45 and "BOTTOM" or y > h*.55 and "TOP" or "")..(x < w*.45 and "LEFT" or x > w*.55 and "RIGHT" or "")
   
@@ -307,6 +308,126 @@ local function allocateItem()
   return item
 end
 
+-- Everything about a quest that's still in the route: the turn-in, and any objectives not done yet.
+local function QuestClusters(quest)
+  local clusters = {}
+  if QH_Route_GetClusterPriority(quest.finish) then table.insert(clusters, quest.finish) end
+  for i = 1, quest.criteria_built or 0 do
+    if quest[i] and QH_Route_GetClusterPriority(quest[i]) then table.insert(clusters, quest[i]) end
+  end
+  return clusters
+end
+
+local function ToggleQuestWatch(quest)
+  local index = quest.type_quest.index
+  if IsQuestWatched(index) then
+    RemoveQuestWatch(index)
+  else
+    AddQuestWatch(index)
+  end
+  if QuestLogFrame:IsShown() then QuestLog_Update() end
+end
+
+local function OpenQuestMap(quest)
+  local id = select(9, GetQuestLogTitle(quest.type_quest.index))
+  if id then WorldMap_OpenToQuest(id) end
+end
+
+local function ShowTrackerMenu(objective)
+  local quest = (objective.finish and objective) or (objective.why and objective.why.finish and objective.why) or nil
+  
+  if not quest and not objective.cluster then  -- the "quests may be hidden" lines have a menu of their own
+    if objective.tracker_clicked then objective.tracker_clicked() end
+    return
+  end
+  
+  local menu = QuestHelper:CreateMenu()
+  
+  -- A quest's title is about the whole quest, a line under it is about that one objective, and the top of the menu says which it is.
+  local title = (objective == quest and quest.type_quest.title) or objective.tracker_desc or ""
+  QuestHelper:CreateMenuTitle(menu, (title:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")))
+  
+  local index = quest and quest.type_quest.index
+  if index and quest.tracker_clicked then
+    QuestHelper:CreateMenuItem(menu, OBJECTIVES_VIEW_IN_QUESTLOG or "Open Quest Details"):SetFunction(quest.tracker_clicked)
+    QuestHelper:CreateMenuItem(menu, IsQuestWatched(index) and (OBJECTIVES_STOP_TRACKING or "Stop Tracking") or (TRACK_QUEST or "Track")):SetFunction(ToggleQuestWatch, quest)
+    if WorldMap_OpenToQuest and select(9, GetQuestLogTitle(index)) then
+      QuestHelper:CreateMenuItem(menu, OBJECTIVES_SHOW_QUEST_MAP or "Show Quest Map"):SetFunction(OpenQuestMap, quest)
+    end
+  end
+  
+  if objective == quest then
+    QuestHelper:AddClusterOptionsToMenu(QuestClusters(quest), menu)
+  elseif QH_Route_GetClusterPriority(objective.cluster) then
+    QuestHelper:AddClusterOptionsToMenu({objective.cluster}, menu, objective.map_suppress_ignore)
+  end
+  
+  if #menu.items > 1 then
+    menu:ShowAtCursor()
+  else
+    QuestHelper:ReleaseMenu(menu)  -- nothing to offer
+  end
+end
+
+-- Any heading can be minimised. One that's also a quest log heading follows the quest log, so minimising it here minimises it there and the other way round. Anything else (a party member's quests, say) is remembered by the tracker itself.
+local function IsLogHeading(name)
+  return QH_QuestLog_Heading ~= nil and QH_QuestLog_Heading(name) ~= nil
+end
+
+local function HeadingCollapsed(name)
+  local log = QH_QuestLog_Heading and QH_QuestLog_Heading(name)
+  if log then return log.collapsed end
+  local saved = rawget(QuestHelper_Pref, "track_collapsed")
+  return (saved and saved[name]) and true or false
+end
+
+local function ToggleHeading(name)
+  local saved = rawget(QuestHelper_Pref, "track_collapsed")
+  if QH_QuestLog_ToggleHeading(name) then
+    if saved then saved[name] = nil end
+  else
+    if not saved then
+      saved = {}
+      QuestHelper_Pref.track_collapsed = saved
+    end
+    saved[name] = (not saved[name]) or nil
+  end
+  QH_Tracker_Rescan()
+end
+
+local function HeadingToggleClicked(self)
+  ToggleHeading(self.heading)
+end
+
+local function HeadingMouseDown(self, button)
+  if button == "LeftButton" then ToggleHeading(self.obj.tracker_heading) end
+end
+
+-- The same button the game's own tracker minimises itself with. The top half of the picture is for opening, the bottom half for minimising.
+local function ShowHeadingToggle(item, header)
+  local toggle = item.toggle
+  if not toggle then
+    toggle = CreateFrame("Button", nil, item)
+    toggle:SetWidth(15)
+    toggle:SetHeight(15)
+    toggle:SetNormalTexture("Interface\\Buttons\\UI-Panel-QuestHideButton")
+    toggle:SetPushedTexture("Interface\\Buttons\\UI-Panel-QuestHideButton")
+    toggle:SetHighlightTexture("Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight")
+    toggle:GetHighlightTexture():SetBlendMode("ADD")
+    toggle:RegisterForClicks("LeftButtonUp")
+    toggle:EnableMouse(true)
+    toggle:SetPoint("LEFT", item, "RIGHT", 4, 0)
+    QH_Hook(toggle, "OnClick", HeadingToggleClicked)
+    item.toggle = toggle
+  end
+  
+  local top = header.tracker_minimised and 0 or 0.5
+  toggle:GetNormalTexture():SetTexCoord(0, 0.5, top, top + 0.5)
+  toggle:GetPushedTexture():SetTexCoord(0.5, 1, top, top + 0.5)
+  toggle.heading = header.tracker_heading
+  toggle:Show()
+end
+
 local specitem_max = 1
 local specitem_unused = {}
 
@@ -318,13 +439,16 @@ local function addItem(objective, y, meta)
   if not used_items[obj_key] then used_items[obj_key] = QuestHelper:CreateTable("additem used_items") end
   local item = used_items[obj_key][used_count[obj_key]]
   
-  local x = meta and 4 or 20
+  local x = (meta == "zone") and 0 or (meta and 4 or 20)
   
   if not item then
     used_items[obj_key][used_count[obj_key]] = allocateItem()
     item = used_items[obj_key][used_count[obj_key]]
     
-    if meta then
+    if meta == "zone" then
+      item.text:SetFont(QuestHelper.font.serif, 13)
+      item.text:SetTextColor(1, 1, 1)
+    elseif meta then
       item.text:SetFont(QuestHelper.font.serif, 12)
       item.text:SetTextColor(.82, .65, 0)
     else
@@ -346,9 +470,17 @@ local function addItem(objective, y, meta)
   item:SetWidth(w)
   item:SetHeight(h)
   
-  if objective.tracker_clicked then
-    QH_Hook(item, "OnMouseDown", function (self, button) if button == "RightButton" then objective.tracker_clicked() end end)
+  if meta == "zone" then
+    ShowHeadingToggle(item, objective)
+    QH_Hook(item, "OnMouseDown", HeadingMouseDown)
     item:EnableMouse(true)
+  else
+    if item.toggle then item.toggle:Hide() end  -- this frame may have been a heading before
+    
+    if objective.tracker_clicked or objective.cluster or objective.finish then  -- the last is for party members' quests, which aren't in our log
+      QH_Hook(item, "OnMouseDown", function (self, button) if button == "RightButton" then ShowTrackerMenu(objective) end end)
+      item:EnableMouse(true)
+    end
   end
   
   if item.ex ~= x or item.ey ~= y then
@@ -410,13 +542,113 @@ local function addMetaObjective(metaobj, items, y, depth)
   for _, v in ipairs(items) do
     if not v.tracker_hide_dupes or not seen_texts[v.tracker_desc] then
       x, y = addItem(v, y, false)
-      seen_texts[v.tracker_desc] = true
+      if v.tracker_desc then seen_texts[v.tracker_desc] = true end
     end
   end
+  QuestHelper:ReleaseTable(seen_texts)
   return math.max(y, spacer), depth + #items + 1
 end
 
+-- One of these per zone name. They're ordinary tracker objects, so they animate and recycle like everything else.
+local zone_headers = {}
+
+-- Quests use their quest log heading, same as the built-in quest log. Anything else in the list (an achievement, say) uses the zone of its next objective.
+local function GetTrackerZone(metaobj, node)
+  local zone = metaobj.tracker_zone
+  if not zone and node and node.loc then zone = QuestHelper_NameLookup[node.loc.p] end
+  return zone or false
+end
+
+-- A party member's quest goes under their name. The zone's what everything else goes under, when zone headings are on.
+local function EntryHeadings(metaobj, node)
+  local owners = metaobj.finish and QH_Quest_SharedBy(metaobj)
+  return owners and QHFormat("PEER_QUESTS", owners) or nil, GetTrackerZone(metaobj, node)
+end
+
+-- Things to be drawn get lined up first, so they can be sorted into zones before anything's placed.
+local function QueueMetaObjective(queue, metaobj, items, node, owned, depth)
+  local heading, zone = EntryHeadings(metaobj, node)
+  local shown_under = heading or (QuestHelper_Pref.track_zones and zone)
+  local minimised = shown_under and HeadingCollapsed(shown_under)
+  
+  if minimised and IsLogHeading(shown_under) then
+    -- Minimised in the quest log. Its heading's line comes from the quest log itself, in the quest log's order.
+    if owned then QuestHelper:ReleaseTable(items) end
+    return depth
+  end
+  
+  local entry = QuestHelper:CreateTable("tracker queue entry")
+  entry.metaobj, entry.items, entry.zone, entry.owned, entry.heading = metaobj, items, zone, owned, heading
+  table.insert(queue, entry)
+  
+  if minimised then return depth end  -- it still puts its heading where it would have been, but takes no room
+  return depth + #items + 1
+end
+
+-- A line that's only a heading, for one that's been minimised.
+local function QueueHeadingOnly(queue, heading, zone)
+  local entry = QuestHelper:CreateTable("tracker queue entry")
+  entry.heading, entry.zone = heading, zone
+  table.insert(queue, entry)
+end
+
+local function DrawQueue(queue, y)
+  -- Headings keep the order they first turn up in the queue, and quests keep their order under each heading. For the route list that means the top line is still the next thing to do. Party members' quests always follow our own.
+  local order = QuestHelper:CreateTable("tracker heading order")
+  local groups = QuestHelper:CreateTable("tracker heading groups")
+  
+  for pass = 1, 2 do
+    for _, entry in ipairs(queue) do
+      if (entry.heading ~= nil) == (pass == 2) then
+        local heading = entry.heading or (QuestHelper_Pref.track_zones and entry.zone) or false
+        if not groups[heading] then
+          groups[heading] = QuestHelper:CreateTable("tracker heading group")
+          table.insert(order, heading)
+        end
+        table.insert(groups[heading], entry)
+      end
+    end
+  end
+  
+  local last_minimised = false
+  for index, heading in ipairs(order) do
+    local minimised = heading and HeadingCollapsed(heading) or false
+    
+    if heading then
+      if index > 1 then y = y + ((minimised and last_minimised) and 2 or 6) end  -- minimised headings sit together, as they do in the quest log
+      local header = zone_headers[heading]
+      if not header then
+        header = {tracker_desc = heading, tracker_heading = heading}
+        zone_headers[heading] = header
+      end
+      header.tracker_minimised = minimised
+      local _, ty = addItem(header, y, "zone")
+      y = ty + 1
+    end
+    
+    if not minimised then
+      for _, entry in ipairs(groups[heading]) do
+        if entry.metaobj then y = addMetaObjective(entry.metaobj, entry.items, y, 0) end
+      end
+    end
+    QuestHelper:ReleaseTable(groups[heading])
+    last_minimised = minimised
+  end
+  
+  QuestHelper:ReleaseTable(order)
+  QuestHelper:ReleaseTable(groups)
+  
+  for _, entry in ipairs(queue) do
+    if entry.owned then QuestHelper:ReleaseTable(entry.items) end
+    QuestHelper:ReleaseTable(entry)
+  end
+  QuestHelper:ReleaseTable(queue)
+  
+  return y
+end
+
 local function removeUnusedItem(item)
+  if item.toggle then item.toggle:Hide() end
   item.t = 0
   item.sx, item.sy, item.dx, item.dy = item.x, item.y, item.x+30, item.y
   QH_Hook(item, "OnMouseDown", nil)
@@ -445,6 +677,16 @@ local hidden_vquest2 = { tracker_desc = "    " .. QHText("QUESTS_HIDDEN_2"), tra
 local route = {}
 local pinned = {}
 
+-- Watched quests aren't in route order, so they follow the quest log.
+local function ByQuestLogPosition(a, b)
+  if a.log_index ~= b.log_index then return a.log_index < b.log_index end
+  return tostring(a.trackkey) < tostring(b.trackkey)
+end
+
+local function ByObjectiveNumber(a, b)
+  return (a.tracker_order or 0) < (b.tracker_order or 0)
+end
+
 -- This is actually called surprisingly often.
 function QH_Tracker_Rescan()
   used_count = QuestHelper:CreateTable("tracker rescan used_count")
@@ -453,14 +695,20 @@ function QH_Tracker_Rescan()
   local obj_done = QuestHelper:CreateTable("tracker rescan obj_done")
   
   local y, depth = 0, 0
+  local minimised_shown = QuestHelper:CreateTable("tracker minimised headings")  -- minimised quest log headings that would have had something listed
   
   do
     local had_pinned = false
   
     local objs = QuestHelper:CreateTable("tracker objs")
     for k, v in pairs(pinned) do
-      if not objs[k.why] then objs[k.why] = QuestHelper:CreateTable("tracker objs sub") end
-      if not k.ignore and not k.tracker_hidden then table.insert(objs[k.why], k) end
+      if QuestHelper_Pref.track_zones and k.why.tracker_in_collapsed then
+        -- Under a minimised quest log heading. A tracked quest would have been listed, so its heading keeps a line.
+        if k.why.tracker_minimised_under then minimised_shown[k.why.tracker_minimised_under] = true end
+      else
+        if not objs[k.why] then objs[k.why] = QuestHelper:CreateTable("tracker objs sub") end
+        if not k.ignore and not k.tracker_hidden then table.insert(objs[k.why], k) end
+      end
       obj_done[k.cluster] = true 
     end
     
@@ -468,16 +716,35 @@ function QH_Tracker_Rescan()
     for k, v in pairs(objs) do
       v.cluster = k
       v.trackkey = k
+      v.log_index = k.type_quest and k.type_quest.index or math.huge
+      table.sort(v, ByObjectiveNumber)
       table.insert(sort_objs, v)
     end
     
-    table.sort(sort_objs, function (a, b) return tostring(a.trackkey) < tostring(b.trackkey) end)
-    
-    for _, v in ipairs(sort_objs) do
-      y, depth = addMetaObjective(v.cluster, v, y, depth)
-      had_pinned = true
-      QuestHelper:ReleaseTable(v)
+    if QuestHelper_Pref.track_zones and QH_QuestLog_Headings then
+      -- A minimised quest log heading keeps its line, in its place in the quest log, if it has a tracked quest under it.
+      for _, heading in ipairs(QH_QuestLog_Headings()) do
+        if heading.collapsed and minimised_shown[heading.name] then
+          local stand_in = QuestHelper:CreateTable("tracker minimised heading")
+          stand_in.minimised_heading, stand_in.log_index, stand_in.trackkey = heading.name, heading.index, heading.name
+          table.insert(sort_objs, stand_in)
+        end
+      end
     end
+    
+    table.sort(sort_objs, ByQuestLogPosition)
+    
+    local queue = QuestHelper:CreateTable("tracker pinned queue")
+    for _, v in ipairs(sort_objs) do
+      if v.minimised_heading then
+        QueueHeadingOnly(queue, nil, v.minimised_heading)
+        QuestHelper:ReleaseTable(v)
+      else
+        depth = QueueMetaObjective(queue, v.cluster, v, v[1], true, depth)
+      end
+      had_pinned = true
+    end
+    y = DrawQueue(queue, y)
     QuestHelper:ReleaseTable(sort_objs)
     QuestHelper:ReleaseTable(objs)
     
@@ -517,26 +784,37 @@ function QH_Tracker_Rescan()
   end
   
   do
+    local queue = QuestHelper:CreateTable("tracker route queue")
     local current_mo
     local current_mo_cluster
+    local current_mo_node
     for k, v in ipairs(route) do
       if depth > QuestHelper_Pref.track_size and not debug_output then break end
-      if not v.ignore and not v.why.tracker_hidden and not obj_done[v.cluster] then
+      local minimised = QuestHelper_Pref.track_zones and not v.ignore and v.why and v.why.tracker_in_collapsed
+      if minimised and not v.ignore and not v.why.tracker_hidden and not obj_done[v.cluster] then
+        -- Under a minimised quest log heading. It would have made the list, so its heading keeps a line here.
+        local heading = v.why.tracker_minimised_under
+        if heading and not minimised_shown[heading] and HeadingCollapsed(heading) and IsLogHeading(heading) then
+          minimised_shown[heading] = true
+          QueueHeadingOnly(queue, nil, heading)
+        end
+      end
+      if not minimised and not v.ignore and not v.why.tracker_hidden and not obj_done[v.cluster] then
         if current_mo and v.why ~= current_mo and (v.why.tracker_split or not mo_done[v.why]) then
-          y, depth = addMetaObjective(current_mo, current_mo_cluster, y, depth)
-          QuestHelper:ReleaseTable(current_mo_cluster)
-          current_mo, current_mo_cluster = nil, nil
+          depth = QueueMetaObjective(queue, current_mo, current_mo_cluster, current_mo_node, true, depth)
+          current_mo, current_mo_cluster, current_mo_node = nil, nil, nil
         end
         
         if not v.why.tracker_split then
           if not mo_done[v.why] then
-            y, depth = addMetaObjective(v.why, metalookup[v.why], y, depth)
+            depth = QueueMetaObjective(queue, v.why, metalookup[v.why], v, false, depth)
             mo_done[v.why] = true
           end
         else
           if not current_mo then
             current_mo = v.why
             current_mo_cluster = QuestHelper:CreateTable("tracker current cluster")
+            current_mo_node = v
           end
           if not v.tracker_hidden then table.insert(current_mo_cluster, v) end
         end
@@ -544,12 +822,16 @@ function QH_Tracker_Rescan()
         obj_done[v] = true
       end
     end
+    QuestHelper:ReleaseTable(minimised_shown)
     if current_mo and not (depth > QuestHelper_Pref.track_size and not debug_output) then
-      y, depth = addMetaObjective(current_mo, current_mo_cluster, y, depth)
+      depth = QueueMetaObjective(queue, current_mo, current_mo_cluster, current_mo_node, true, depth)
+      current_mo_cluster = nil  -- the queue owns it now
     end
     if current_mo_cluster then
       QuestHelper:ReleaseTable(current_mo_cluster)
     end
+    
+    y = DrawQueue(queue, y)
   end
   
   -- now we check to see if we need a hidden display
@@ -659,6 +941,7 @@ end
 
 
 local check_delay = 4
+local was_inside
 
 -- This function does the grunt work of cursor positioning and rescaling. It does not actually reorganize items.
 function tracker:update(delta)

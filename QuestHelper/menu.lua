@@ -3,16 +3,20 @@ QuestHelper_Loadtime["menu.lua"] = GetTime()
 
 QuestHelper.active_menu = nil
 
-local menuBorderInset = 4
+-- These are drawn to match the game's own right-click menus. They're still our own frames rather than the real thing, because addons that open the real dropdown from their own code can stop Set Focus and friends working in the unit menus.
 local menuBackdrop = {
     bgFile = "Interface/Tooltips/UI-Tooltip-Background",
     edgeFile = "Interface/Tooltips/UI-Tooltip-Border",
     edgeSize = 16,
     tile = true,
     tileSize = 16,
-    insets = { left = menuBorderInset, right = menuBorderInset, top = menuBorderInset, bottom = menuBorderInset }}
-local menuBackdropColor = { 0, 0, 0, 0.65 }
-local menuBackdropBorderColor = { 1, 1, 1, 0.7 }
+    insets = { left = 5, right = 5, top = 5, bottom = 4 }}
+local menuBackdropColor = { 0.09, 0.09, 0.19, 1 }
+local menuBackdropBorderColor = { 1, 1, 1, 1 }
+
+local menuPadLeft, menuPadRight, menuPadY = 15, 10, 15
+local menuRowHeight = 16
+local menuCloseDelay = 2  -- seconds the pointer can be away before the menu closes itself, same as the game's
 
 local function Menu_AddItem(self, item)
   item:ClearAllPoints()
@@ -27,34 +31,48 @@ local function Menu_SetCloseFunction(self, ...)
   self.func = table.remove(self.func_arg, 1)
 end
 
-local function Menu_OnUpdate(self, elapsed)
-  if self.showing then
-    self.show_phase = self.show_phase + elapsed * 5.0
-    if self.show_phase > 1 then
-      self.show_phase = 1
-      QH_Hook(self, "OnUpdate", nil)
-    end
-  else
-    self.show_phase = self.show_phase - elapsed * 3.0
-    if self.show_phase < 0 then
-      self.show_phase = 0
-      QH_Hook(self, "OnUpdate", nil)
-      self:Hide()
-      if self.func then
-        self.func(unpack(self.func_arg))
-      end
-      if self.auto_release then
-        QuestHelper:ReleaseMenu(self)
-        return
-      end
-    end
+-- Is the pointer over this menu, or any submenu hanging off it?
+local function Menu_ContainsCursor(self)
+  local left, right, top, bottom = self:GetLeft(), self:GetRight(), self:GetTop(), self:GetBottom()
+  if left and right and top and bottom then  -- frames don't always know where they are
+    local x, y = GetCursorPosition()
+    local scale = self:GetEffectiveScale()
+    x, y = x / scale, y / scale
+    if x >= left and x <= right and y >= bottom and y <= top then return true end
   end
   
-  self:SetAlpha(self.show_phase)
+  return self.submenu and self.submenu.showing and Menu_ContainsCursor(self.submenu)
+end
+
+local function Menu_OnUpdate(self, elapsed)
+  if not self.showing then
+    QH_Hook(self, "OnUpdate", nil)
+    self:Hide()
+    if self.func then
+      self.func(unpack(self.func_arg))
+    end
+    if self.auto_release then
+      QuestHelper:ReleaseMenu(self)
+    end
+    return
+  end
+  
+  if self.parent then  -- the menu at the top looks after its submenus
+    QH_Hook(self, "OnUpdate", nil)
+    return
+  end
+  
+  if Menu_ContainsCursor(self) then
+    self.away = 0
+  else
+    self.away = self.away + elapsed
+    if self.away >= menuCloseDelay then self:DoHide() end
+  end
 end
 
 local function Menu_DoShow(self)
   self.showing = true
+  self.away = 0
   
   local w, h = 0, 0
   
@@ -64,10 +82,10 @@ local function Menu_DoShow(self)
     h = h + ch
   end
   
-  local y = menuBorderInset
+  local y = menuPadY
   
-  self:SetWidth(w+2*menuBorderInset)
-  self:SetHeight(h+2*menuBorderInset)
+  self:SetWidth(w+menuPadLeft+menuPadRight)
+  self:SetHeight(h+2*menuPadY)
   self:Show()
   QH_Hook(self, "OnUpdate", self.OnUpdate)
   
@@ -75,7 +93,7 @@ local function Menu_DoShow(self)
     local cw, ch = c:GetSize()
     c:ClearAllPoints()
     c:SetSize(w, ch)
-    c:SetPoint("TOPLEFT", self, "TOPLEFT", menuBorderInset, -y)
+    c:SetPoint("TOPLEFT", self, "TOPLEFT", menuPadLeft, -y)
     y = y + ch
   end
   
@@ -116,12 +134,6 @@ local function Menu_ShowAtCursor(self, auto_release)
   auto_release = (auto_release == nil) and true or auto_release
   self.auto_release = auto_release
 
-  -- Add a 'Close Menu' item to the end of the menu, if it's not there already
-  if not self.close_item then
-    self.close_item = QuestHelper:CreateMenuItem(self, QHText("MENU_CLOSE"))
-    self.close_item:SetFunction( function() self:DoHide() end )
-  end
-
   -- Set up the menu position, parentage, etc
   local x, y = GetCursorPosition()
   
@@ -133,12 +145,17 @@ local function Menu_ShowAtCursor(self, auto_release)
   -- Need to call DoShow before setting the position so that the width and height will have been calculated.
   self:DoShow()
   
-  -- I declare this math horrible and convoluted.
+  -- Like the game's menus, the corner goes at the pointer, and it opens the other way if it would run off the side of the screen.
   local scale = parent and parent:GetEffectiveScale() or 1
-  x, y = math.max(0, math.min(x-self:GetWidth()/2*scale, UIParent:GetRight()*UIParent:GetEffectiveScale()-self:GetWidth()*scale)) / scale,
-         math.min(UIParent:GetTop()*UIParent:GetEffectiveScale(), math.max(self:GetHeight(), y+5)) / scale
+  local w, h = self:GetWidth()*scale, self:GetHeight()*scale
+  local screen_right, screen_top = UIParent:GetRight()*UIParent:GetEffectiveScale(), UIParent:GetTop()*UIParent:GetEffectiveScale()
   
-  self:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", x, y)
+  local left = x - 3
+  if left + w > screen_right then left = x + 3 - w end
+  left = math.max(0, math.min(left, screen_right - w))
+  local top = math.min(screen_top, math.max(h, y + 3))
+  
+  self:SetPoint("TOPLEFT", UIParent, "BOTTOMLEFT", left / scale, top / scale)
   
   if QuestHelper.active_menu and QuestHelper.active_menu ~= self then
     QuestHelper.active_menu:DoHide()
@@ -166,7 +183,6 @@ function QuestHelper:CreateMenu()
   menu.DoHide = Menu_DoHide
   menu.ShowAtCursor = Menu_ShowAtCursor
   
-  menu.show_phase = 0
   menu.showing = false
   menu.level = 2
   menu:SetFrameLevel(menu.level)
@@ -189,6 +205,14 @@ function QuestHelper:ReleaseMenu(menu)
 end
 
 local function MenuItem_AddTexture(self, tex, before)
+  if tex.icon_id == 10 or tex.icon_id == 12 then  -- QH's "this one's selected" marks, which the game draws as a yellow tick
+    tex:SetTexture("Interface\\Buttons\\UI-CheckBox-Check")
+    tex:SetTexCoord(0, 1, 0, 1)
+    tex:SetWidth(24)
+    tex:SetHeight(24)
+    tex.menu_slot = 16  -- the picture has empty space around the tick, so text can sit closer than its width would suggest
+  end
+  
   if before then
     table.insert(self.lchildren, 1, tex)
   else
@@ -212,67 +236,18 @@ local function MenuItem_DoHide(self)
 end
 
 local function MenuItem_OnUpdate(self, elapsed)
-  local done_update = true
+  QH_Hook(self, "OnUpdate", nil)
   
-  if self.highlighting then
-    self.highlight_phase = self.highlight_phase + elapsed * 3.0
-    if self.highlight_phase > 1 then
-      self.highlight_phase = 1
-    else
-      done_update = false
-    end
-  else
-    self.highlight_phase = self.highlight_phase - elapsed
-    if self.highlight_phase < 0 then
-      self.highlight_phase = 0
-    else
-      done_update = false
-    end
-  end
-  
-  if self.showing then
-    self.show_phase = self.show_phase + elapsed * 5.0
-    if self.show_phase > 1 then
-      self.show_phase = 1
-    else
-      done_update = false
-    end
-  else
-    self.show_phase = self.show_phase - elapsed * 5.0
-    if self.show_phase < 0 then
-      self.show_phase = 0
-      self.highlight_phase = 0
-      self:Hide()
-      done_update = true
-    else
-      done_update = false
-    end
-  end
-  
-  self:Shade(self.show_phase, self.highlight_phase)
-  
-  if done_update then
-    QH_Hook(self, "OnUpdate", nil)
-  end
+  if not self.showing then self:Hide() end
+  self:Shade(self.showing and self.highlighting)
 end
 
-local function MenuItem_Shade(self, s, h)
-  local theme = QuestHelper:GetColourTheme()
-  
-  local ih = 1-h
-  
-  self.text:SetTextColor(ih*theme.menu_text[1]+h*theme.menu_text_highlight[1],
-                         ih*theme.menu_text[2]+h*theme.menu_text_highlight[2],
-                         ih*theme.menu_text[3]+h*theme.menu_text_highlight[3], 1)
-  
-  self.text:SetShadowColor(0, 0, 0, ih)
-  self.text:SetShadowOffset(1, -1)
-  
-  self.background:SetVertexColor(ih*theme.menu[1]+h*theme.menu_highlight[1],
-                                 ih*theme.menu[2]+h*theme.menu_highlight[2],
-                                 ih*theme.menu[3]+h*theme.menu_highlight[3], h*0.3+0.4)
-  
-  self:SetAlpha(s)
+local function MenuItem_Shade(self, lit)
+  if lit then
+    self.background:Show()
+  else
+    self.background:Hide()
+  end
 end
 
 local function MenuItem_SetFunction(self, ...)
@@ -287,7 +262,11 @@ local function MenuItem_SetSubmenu(self, menu)
   menu:SetPoint("TOPLEFT", self, "TOPLEFT")
   menu.parent = self
   self.submenu = menu
-  self:AddTexture(QuestHelper:CreateIconTexture(self, 9))
+  
+  local arrow = QuestHelper:CreateTexture(self, "Interface\\ChatFrame\\ChatFrameExpandArrow")
+  arrow:SetWidth(16)
+  arrow:SetHeight(16)
+  self:AddTexture(arrow)
 end
 
 local function MenuItem_OnEnter(self)
@@ -314,16 +293,26 @@ local function MenuItem_OnEnter(self)
     
     self.submenu:DoShow()
     
-    if self:GetRight()+self.submenu:GetWidth() > UIParent:GetRight()*UIParent:GetEffectiveScale() then
+    local scale = self:GetEffectiveScale()
+    
+    if (self:GetRight()+self.submenu:GetWidth())*scale > UIParent:GetRight()*UIParent:GetEffectiveScale() then
       h1, h2 = h2, h1
     end
     
-    if self:GetBottom()-self.submenu:GetHeight() < 0 then
+    if (self:GetTop()+menuPadY-self.submenu:GetHeight())*scale < 0 then
       v = "BOTTOM"
     end
     
-    self.submenu:SetPoint(v..h1, self, v..h2)
+    -- Lines the submenu's first row up with this one.
+    self.submenu:SetPoint(v..h1, self, v..h2, 0, (v == "TOP") and menuPadY or -menuPadY)
     self.submenu:DoShow()
+  end
+end
+
+local function MenuItem_OnLeave(self)
+  if not self.submenu then  -- a row stays lit while its submenu's open
+    self.highlighting = false
+    QH_Hook(self, "OnUpdate", self.OnUpdate)
   end
 end
 
@@ -333,7 +322,7 @@ local function MenuItem_GetSize(self)
   self.text:SetWidth(0)
   self.text:SetHeight(0)
   
-  self.text_w = self.text:GetStringWidth()+20
+  self.text_w = self.text:GetStringWidth()+2
   if self.text_w >= 320 then
     -- Clamp width to 320, then ballance the two rows (using a binary search)
     self.text:SetWidth(320)
@@ -358,16 +347,14 @@ local function MenuItem_GetSize(self)
   
   self.text:SetParent(self)
   
-  local w, h = self.text_w+4, self.text_h+4
+  local w, h = self.text_w, math.max(self.text_h+2, menuRowHeight)
   
   for i, f in ipairs(self.lchildren) do
-    w = w + f:GetWidth() + 4
-    h = math.max(h, f:GetHeight() + 4)
+    w = w + (f.menu_slot or f:GetWidth()) + 4
   end
   
   for i, f in ipairs(self.rchildren) do
-    w = w + f:GetWidth() + 4
-    h = math.max(h, f:GetHeight() + 4)
+    w = w + (f.menu_slot or f:GetWidth()) + 4
   end
   
   self.needed_width = w
@@ -382,25 +369,23 @@ local function MenuItem_SetSize(self, w, h)
   local x = 0
   
   for i, f in ipairs(self.lchildren) do
-    local cw, ch = f:GetWidth(), f:GetHeight()
-    
     f:ClearAllPoints()
-    f:SetPoint("TOPLEFT", self, "TOPLEFT", x+2, -(h-ch)*0.5)
-    x = x + cw + 4
+    f:SetPoint("TOPLEFT", self, "TOPLEFT", x, -(h-f:GetHeight())*0.5)
+    x = x + (f.menu_slot or f:GetWidth()) + 4
   end
   
-  local x1 = x
+  local text_x = x
   x = w
   
   for i, f in ipairs(self.rchildren) do
-    local cw, ch = f:GetWidth(), f:GetHeight()
+    x = x - (f.menu_slot or f:GetWidth())
     f:ClearAllPoints()
-    x = x - cw - 4
-    f:SetPoint("TOPLEFT", self, "TOPLEFT", x+2, -(h-ch)*0.5)
+    f:SetPoint("TOPLEFT", self, "TOPLEFT", x, -(h-f:GetHeight())*0.5)
+    x = x - 4
   end
   
   self.text:ClearAllPoints()
-  self.text:SetPoint("TOPLEFT", self, "TOPLEFT", x1+((x-x1)-self.text_w)*0.5, -(h-self.text_h)*0.5)
+  self.text:SetPoint("TOPLEFT", self, "TOPLEFT", text_x, -(h-self.text_h)*0.5)
 end
 
 local function MenuItem_OnClick(self, btn)
@@ -426,16 +411,17 @@ function QuestHelper:CreateMenuItem(menu, text)
   
   item.lchildren = self:CreateTable()
   item.rchildren = self:CreateTable()
-  item.text = self:CreateText(item, text)
-  item.background = self:CreateTexture(item, 1, 1, 1, 1)
+  item.text = self:CreateText(item, text, 10, self.font.serif)
+  item.text:SetJustifyH("LEFT")
+  item.text:SetShadowColor(0, 0, 0, 1)
+  item.background = self:CreateTexture(item, "Interface\\QuestFrame\\UI-QuestTitleHighlight")
+  item.background:SetBlendMode("ADD")
   item.background:SetDrawLayer("BACKGROUND")
   item.background:SetAllPoints()
-  item.background:SetVertexColor(0, 0, 0, 0)
+  item.background:Hide()
   
   item.showing = false
   item.highlighting = false
-  item.show_phase = 0
-  item.highlight_phase = 0
   
   item.AddTexture = MenuItem_AddTexture
   item.DoShow = MenuItem_DoShow
@@ -445,12 +431,14 @@ function QuestHelper:CreateMenuItem(menu, text)
   item.SetFunction = MenuItem_SetFunction
   item.SetSubmenu = MenuItem_SetSubmenu
   item.OnEnter = MenuItem_OnEnter
+  item.OnLeave = MenuItem_OnLeave
   item.GetSize = MenuItem_GetSize
   item.SetSize = MenuItem_SetSize
   item.OnClick = MenuItem_OnClick
   
   item:RegisterForClicks("LeftButtonUp", "RightButtonDown")
   QH_Hook(item, "OnEnter", item.OnEnter)
+  QH_Hook(item, "OnLeave", item.OnLeave)
   QH_Hook(item, "OnClick", item.OnClick)
   
   menu:AddItem(item)
@@ -503,25 +491,6 @@ local function MenuTitle_OnDragStop(self)
   parent:StopMovingOrSizing()
 end
 
-local function MenuTitle_Shade(self, s, h)
-  local theme = QuestHelper:GetColourTheme()
-  
-  local ih = 1-h
-  
-  self.text:SetTextColor(ih*theme.menu_title_text[1]+h*theme.menu_title_text_highlight[1],
-                         ih*theme.menu_title_text[2]+h*theme.menu_title_text_highlight[2],
-                         ih*theme.menu_title_text[3]+h*theme.menu_title_text_highlight[3], 1)
-  
-  self.background:SetVertexColor(ih*theme.menu_title[1]+h*theme.menu_title_highlight[1],
-                                 ih*theme.menu_title[2]+h*theme.menu_title_highlight[2],
-                                 ih*theme.menu_title[3]+h*theme.menu_title_highlight[3], h*0.3+0.4)
-  
-  self.text:SetShadowColor(0, 0, 0, 1)
-  self.text:SetShadowOffset(1, -1)
-  
-  self:SetAlpha(s)
-end
-
 local function MenuTitle_OnClick(self)
   local parent = self.parent
   
@@ -535,22 +504,11 @@ end
 function QuestHelper:CreateMenuTitle(menu, title)
   local item = self:CreateMenuItem(menu, title)
   
-  local f1, f2 = self:CreateTexture(item, "Interface\\AddOns\\QuestHelper\\Art\\Fluff.tga"),
-                 self:CreateTexture(item, "Interface\\AddOns\\QuestHelper\\Art\\Fluff.tga")
-  
-  f1:SetTexCoord(0, 1, 0, .5)
-  f1:SetWidth(20)
-  f1:SetHeight(10)
-  f2:SetTexCoord(0, 1, .5, 1)
-  f2:SetWidth(20)
-  f2:SetHeight(10)
-  
-  item:AddTexture(f1, true)
-  item:AddTexture(f2, false)
+  item.text:SetTextColor(1, 0.82, 0)
   
   item.OnDragStart = MenuTitle_OnDragStart
   item.OnDragStop = MenuTitle_OnDragStop
-  item.Shade = MenuTitle_Shade
+  item.Shade = QuestHelper.nop
   item.OnClick = MenuTitle_OnClick
   
   item:RegisterForClicks("RightButtonDown")
@@ -558,6 +516,4 @@ function QuestHelper:CreateMenuTitle(menu, title)
   QH_Hook(item, "OnDragStart", item.OnDragStart)
   QH_Hook(item, "OnDragStop", item.OnDragStop)
   item:RegisterForDrag("LeftButton")
-  
-  item.text:SetFont(QuestHelper.font.fancy, 11)
 end

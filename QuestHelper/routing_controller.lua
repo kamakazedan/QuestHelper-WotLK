@@ -32,6 +32,8 @@ local Route_Core_Ignored_Cluster_Active = QH_Route_Core_Ignored_Cluster_Active
 
 local Route_Core_EarlyExit = QH_Route_Core_EarlyExit
 
+local Route_Core_Recover = QH_Route_Core_Recover
+
 QH_Route_Core_Process = nil
 QH_Route_Core_Init = nil
 QH_Route_Core_SetStart = nil
@@ -51,6 +53,7 @@ QH_Route_Core_IgnoredReasons_Node = nil
 QH_Route_Core_Ignored_Cluster = nil
 QH_Route_Core_Ignored_Cluster_Active = nil
 QH_Route_Core_EarlyExit = nil
+QH_Route_Core_Recover = nil
 
 local pending = {}
 local rescan_it_all = false
@@ -186,7 +189,11 @@ local function ReplotPath(progress)
   
   for _, v in pairs(notification_funcs) do
     QH_Timeslice_Yield()
-    v(real_path)
+    
+    -- These are all UI updates. A problem drawing something shouldn't take the routing thread down with it.
+    QH_Timeslice_PushUnyieldable()
+    QH_SafeCall(v, real_path)
+    QH_Timeslice_PopUnyieldable()
   end
   
   -- I hate having to do this, I feel like I'm just begging for horrifying bugs
@@ -445,6 +452,9 @@ local function ReleaseShard(ki, shard)
   QuestHelper:ReleaseTable(shard)
 end
 
+-- The batch of pending changes we're in the middle of. Lives out here so that when the thread is restarted after an error, the rest of the batch still gets applied.
+local lpending, lpending_next
+
 local function process()
 
   local last_cull = 0
@@ -467,7 +477,8 @@ local function process()
     
     if last_movement + 1 < GetTime() then
       local c, x, y, rc, rz = QuestHelper.routing_ac, QuestHelper.routing_ax, QuestHelper.routing_ay, QuestHelper.routing_c, QuestHelper.routing_z  -- ugh we need a better solution to this, but with this weird "planes" hybrid there just isn't one right now
-      if c and x and y and rc and rz and (c ~= lc or x ~= lx or y ~= ly or rc ~= lrc or rz ~= lrz) then
+      local known_zone = rc and rz and QuestHelper_IndexLookup[rc] and QuestHelper_IndexLookup[rc][rz]  -- NewLoc can't do anything with a zone we have no data for. Routing just keeps using the last good position until we're somewhere we recognise.
+      if c and x and y and known_zone and QH_Graph_Ready() and (c ~= lc or x ~= lx or y ~= ly or rc ~= lrc or rz ~= lrz) then
         --local t = GetTime()
         lc, lx, ly, lrc, lrz = c, x, y, rc, rz
         
@@ -514,14 +525,19 @@ local function process()
     QH_Timeslice_Yield()
     
     -- snag stuff so we don't accidentally end up changing pending in two things at once
-    while #pending > 0 do
-      local lpending = pending
-      pending = {}
+    while lpending or #pending > 0 do
+      if not lpending then
+        lpending, lpending_next = pending, 1
+        pending = {}
+      end
       
-      for k, v in ipairs(lpending) do
+      while lpending[lpending_next] do
+        local v = lpending[lpending_next]
+        lpending_next = lpending_next + 1  -- advance first: if v blows up, it mustn't be retried forever
         v()
         QH_Timeslice_Yield()
       end
+      lpending, lpending_next = nil, nil
     end
     
     if rescan_it_all then
@@ -532,6 +548,16 @@ local function process()
   end
 end
 
+-- Called when the routing thread has died part way through something. Everything it may have left half-finished gets thrown away, and the next pass rebuilds it.
+local function RecoverRouting()
+  QH_Graph_Recover()
+  Route_Core_Recover()
+  QuestHelper.route_change_progress = nil
+  
+  pending_recalc = false
+  QH_Route_FlightPathRecalc()
+end
+
 if GetBuildInfo():sub(1, 1) ~= "4" then
-  QH_Timeslice_Add(process, "new_routing")
+  QH_Timeslice_Add(process, "new_routing", RecoverRouting)
 end

@@ -281,6 +281,7 @@ end
 
 function QuestHelper:CreateIconTexture(parent, id)
   local icon = self:CreateTexture(parent, "Interface\\AddOns\\QuestHelper\\Art\\Icons.tga")
+  icon.icon_id = id
   
   local w, h = 1/8, 1/8
   local x, y = ((id-1)%8)*w, math.floor((id-1)/8)*h

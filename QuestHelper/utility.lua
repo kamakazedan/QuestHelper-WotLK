@@ -139,6 +139,18 @@ function QuestHelper:HighlightText(text)
                                             theme.message_highlight[3]*255, text)
 end
 
+-- The player's level, or the last one we saw when the client can't say. During a loading screen it answers nil or 0, and taking that at face value makes every quest in the log look far too high level.
+local last_known_level
+
+function QuestHelper:PlayerLevel()
+  local level = UnitLevel("player")
+  if level and level >= 1 then
+    last_known_level = level
+    return level
+  end
+  return last_known_level or self.player_level or 1
+end
+
 function QuestHelper:GetUnitID(unit)
   local id = UnitGUID(unit)
   

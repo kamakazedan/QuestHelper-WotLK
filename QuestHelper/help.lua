@@ -210,6 +210,16 @@ function QuestHelper:ToggleTrackOColour()
   QH_Tracker_Rescan()
 end
 
+function QuestHelper:ToggleTrackZones()
+  QuestHelper_Pref.track_zones = not QuestHelper_Pref.track_zones
+  if QuestHelper_Pref.track_zones then
+    self:TextOut("Zone headings in the quest tracker have been |cff00ff00enabled|r.")
+  else
+    self:TextOut("Zone headings in the quest tracker have been |cffff0000disabled|r.")
+  end
+  QH_Tracker_Rescan()
+end
+
 function QuestHelper:ToggleTooltip()
   QuestHelper_Pref.tooltip = not QuestHelper_Pref.tooltip
   if QuestHelper_Pref.tooltip then
@@ -855,6 +865,10 @@ commands =
     {"TOCOL",
      "Toggles display of colours for objective progress in the quest tracker provided by QuestHelper.",
      {}, QuestHelper.ToggleTrackOColour, QuestHelper},
+    
+    {"TZONES",
+     "Toggles the zone headings in the quest tracker provided by QuestHelper.",
+     {}, QuestHelper.ToggleTrackZones, QuestHelper},
      
     {"TOOLTIP",
      "Toggles appending information about tracked items and NPCs to their tooltips.",

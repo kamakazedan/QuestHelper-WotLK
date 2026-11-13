@@ -249,6 +249,11 @@ local function StripBlizzQHTooltipClone(ttp)
     end
   end
   
+  if not linemax then  -- just a name line, so there's nothing to strip
+    QuestHelper:ReleaseTable(done)
+    return 0
+  end
+  
   for line = 2, linemax do
     local r, g, b, a = _G["GameTooltipTextLeft" .. line]:GetTextColor()
     r, g, b, a = math.floor(r * 255 + 0.5), math.floor(g * 255 + 0.5), math.floor(b * 255 + 0.5), math.floor(a * 255 + 0.5)
@@ -257,7 +262,7 @@ local function StripBlizzQHTooltipClone(ttp)
     
     local thistext = _G["GameTooltipTextLeft" .. line]:GetText()
     local hideme
-    local thistextm = thistext:match(" %- (.*)")
+    local thistextm = thistext and thistext:match(" %- (.*)")  -- lines can be shown but empty - we blank them ourselves further down
     
     --print(thistext, thistextm)
     if qh_hackery_tooltip_verbosity then print(thistext, r, g, b, a, dereferences[thistext] and true or false, qobj and qobj[thistextm] and true or false, thistextm) end
@@ -367,14 +372,14 @@ QH_AddNotifier(GetTime() + 5, function ()
   local ottsu = GameTooltip:GetScript("OnTooltipSetUnit")
   QH_Hook(GameTooltip, "OnTooltipSetUnit", function (self, ...)
     if qh_tooltip_print_a_lot then print("lol") end
-    CreateTooltip(self)
+    QH_SafeCall(CreateTooltip, self)  -- other addons' hooks are chained below; they shouldn't miss out because of us
     if ottsu then QH_Hook_NotMyFault(ottsu, self, ...) end
     unit_to_adjust = self:GetUnit()
   end, "tooltip OnTooltipSetUnit")
 
   local ottsi = GameTooltip:GetScript("OnTooltipSetItem")
   QH_Hook(GameTooltip, "OnTooltipSetItem", function (self, ...)
-    QH_Hook_NotMyFault(CreateTooltip, self)
+    QH_SafeCall(CreateTooltip, self)
     if ottsi then return QH_Hook_NotMyFault(ottsi, self, ...) end
   end, "tooltip OnTooltipSetItem")
 

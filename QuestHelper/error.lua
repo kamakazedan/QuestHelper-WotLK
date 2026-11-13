@@ -89,8 +89,7 @@ local error_uniqueness_whitelist = {
 function QuestHelper_ErrorCatcher.CondenseErrors()
   if completely_started then
     while next(startup_errors) do
-      _, err = next(startup_errors)
-      table.remove(startup_errors)
+      local err = table.remove(startup_errors)
       
       if not QuestHelper_Errors[err.type] then QuestHelper_Errors[err.type] = {} end
       
@@ -136,7 +135,7 @@ function QuestHelper_ErrorPackage(depth)
 end
 
 StaticPopupDialogs["QH_EXPLODEY"] = {
-	text = "QuestHelper has broken. You may have to restart WoW. Type \"/qh error\" for a detailed error message.",
+	text = "QuestHelper hit an error, but will try to carry on. Type \"/qh error\" for a detailed error message.",
 	button1 = OKAY,
 	OnAccept = function(self)
 	end,
@@ -166,7 +165,7 @@ function QuestHelper_ErrorCatcher_ExplicitError(loud, o_msg, o_frame, o_stack, .
   if (--[[debug_output or]] loud) and not yelled_at_user then
     --print("qhbroken")
     StaticPopupDialogs["QH_EXPLODEY"] = {
-      text = "QuestHelper has broken. You may have to restart WoW. Type \"/qh error\" for a detailed error message.",
+      text = "QuestHelper hit an error, but will try to carry on. Type \"/qh error\" for a detailed error message.",
       button1 = OKAY,
       OnAccept = function(self)
       end,
@@ -195,6 +194,8 @@ function QuestHelper_ErrorCatcher_GenerateReport()
 end
 
 function QuestHelper_ErrorCatcher.OnError(o_msg, o_frame, o_stack, o_etype, ...)
+  if type(o_msg) ~= "string" then o_msg = tostring(o_msg) end  -- error() can be handed anything, and an error handler is a bad place to have an error
+  
   local errorize = false
   local loud = false
   if o_msg and string.find(o_msg, "QuestHelper") and not string.find(o_msg, "Cannot find a library with name") then loud = true end

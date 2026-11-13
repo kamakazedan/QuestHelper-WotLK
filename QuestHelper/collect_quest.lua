@@ -27,7 +27,8 @@ local function RegisterQuestData(category, location, GetQuestLogWhateverInfo)
     if not localspot then if not location["items_" .. category] then location["items_" .. category] = {} end localspot = location["items_" .. category] end
     
     local name, tex, num, qual, usa = GetQuestLogWhateverInfo(index)
-    localspot[GetItemType(ilink)] = num
+    local itype = GetItemType(ilink)
+    if itype then localspot[itype] = num end
     
     --QuestHelper:TextOut(string.format("%s:%d - %d %s %s", category, index, num, tostring(ilink), tostring(name)))
     
@@ -60,6 +61,7 @@ local function ScanQuests()
       --QuestHelper:TextOut(qlink)
       --QuestHelper:TextOut(string.gsub(qlink, "|", "||"))
       local id, level = GetQuestType(qlink)
+      if not id then id = 0 end  -- should never happen, but an unparsable link isn't worth an error
       local title, _, tag, groupcount, _, _, _, daily = GetQuestLogTitle(index)
       
       if not qlookups[title] then qlookups[title] = {} end  -- gronk
@@ -104,6 +106,7 @@ local function ScanQuests()
       
       for i = 1, GetNumQuestLeaderBoards(index) do
         local desc, _, done = GetQuestLogLeaderBoard(i, index)
+        if not desc then desc = "" end  -- not loaded yet
         
         if not qlookups[title][desc] then qlookups[title][desc] = {} end
         table.insert(qlookups[title][desc], {qid = id, obj = i})
@@ -140,6 +143,7 @@ local eventy = {}
 
 local function Looted(message)
   local ltype = GetItemType(message, true)
+  if not ltype then return end
   table.insert(eventy, {time = GetTime(), event = string.format("I%di", ltype)})
   --if debug_output then QuestHelper:TextOut(string.format("Added event %s", string.format("I%di", ltype))) end
 end
@@ -259,8 +263,8 @@ local function UpdateQuests()
       diffs = diffs + 1
       
     else
-      QuestHelper: Assert(#deebey[k] == #noobey[k], string.format("%d vs %d, %d", #deebey[k], #noobey[k], k))
-      for i = 1, #deebey[k] do
+      -- The two can differ if the client didn't have the quest's objectives yet the last time we looked.
+      for i = 1, math.min(#deebey[k], #noobey[k]) do
       
       --[[
         if not (noobey[k][i] >= deebey[k][i]) then

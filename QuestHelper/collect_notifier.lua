@@ -5,8 +5,8 @@ local NotificationsPending = {}
 
 local function OnUpdate()
   while #NotificationsPending > 0 and GetTime() >= NotificationsPending[1].time do
-    NotificationsPending[1].func()
-    table.remove(NotificationsPending, 1) -- okay okay n^2 deal with it
+    local func = table.remove(NotificationsPending, 1).func -- okay okay n^2 deal with it
+    QH_SafeCall(func) -- off the list before it runs: one that errors used to be retried every frame, forever, and blocked everything queued behind it
   end
 end
 

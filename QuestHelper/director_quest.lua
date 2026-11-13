@@ -36,9 +36,7 @@ local function AppendObjlinks(target, source, tooltips, icon, last_name, map_lin
   if not map_lines then map_lines = {} end
   if not tooltip_lines then tooltip_lines = {} end
   
-  QuestHelper: Assert(not seen[source])
-  
-  if seen[source] then return end
+  if seen[source] then return end  -- a loop in the database, nothing more we can get out of this branch
   
   seen[source] = true
   if source.loc then
@@ -55,36 +53,39 @@ local function AppendObjlinks(target, source, tooltips, icon, last_name, map_lin
   end
   
   for _, v in ipairs(source) do
-    local dbgi = DB_GetItem(v.sourcetype, v.sourceid, nil, true)
-    local licon
+    local dbgi = DB_GetItem(v.sourcetype, v.sourceid, true, true)
     
-    --print(v.sourcetype, v.sourceid, v.type)
-    
-    if v.sourcetype == "monster" then
-      table.insert(map_lines, QHFormat("OBJECTIVE_SLAY", dbgi.name or QHText("OBJECTIVE_UNKNOWN_MONSTER")))
-      table.insert(tooltip_lines, 1, QHFormat("TOOLTIP_SLAY", source.name or "nothing"))
-      licon = 1
-    elseif v.sourcetype == "item" then
-      table.insert(map_lines, QHFormat("OBJECTIVE_LOOT", dbgi.name or QHText("OBJECTIVE_ITEM_UNKNOWN")))
-      table.insert(tooltip_lines, 1, QHFormat("TOOLTIP_LOOT", source.name or "nothing"))
-      licon = 2
-    elseif v.sourcetype == "object" then
-      table.insert(map_lines, QHFormat("OBJECTIVE_OPEN", dbgi.name or QHText("OBJECTIVE_ITEM_UNKNOWN")))
-      table.insert(tooltip_lines, 1, QHFormat("TOOLTIP_OPEN", source.name or "nothing"))
-      licon = 2
-    else
-      table.insert(map_lines, string.format("unknown %s (%s/%s)", tostring(dbgi.name), tostring(v.sourcetype), tostring(v.sourceid)))
-      table.insert(tooltip_lines, 1, string.format("unknown %s (%s/%s)", tostring(last_name), tostring(v.sourcetype), tostring(v.sourceid)))
-      licon = 3
+    if dbgi then  -- the database can point at things it doesn't contain
+      local licon
+      
+      --print(v.sourcetype, v.sourceid, v.type)
+      
+      if v.sourcetype == "monster" then
+        table.insert(map_lines, QHFormat("OBJECTIVE_SLAY", dbgi.name or QHText("OBJECTIVE_UNKNOWN_MONSTER")))
+        table.insert(tooltip_lines, 1, QHFormat("TOOLTIP_SLAY", source.name or "nothing"))
+        licon = 1
+      elseif v.sourcetype == "item" then
+        table.insert(map_lines, QHFormat("OBJECTIVE_LOOT", dbgi.name or QHText("OBJECTIVE_ITEM_UNKNOWN")))
+        table.insert(tooltip_lines, 1, QHFormat("TOOLTIP_LOOT", source.name or "nothing"))
+        licon = 2
+      elseif v.sourcetype == "object" then
+        table.insert(map_lines, QHFormat("OBJECTIVE_OPEN", dbgi.name or QHText("OBJECTIVE_ITEM_UNKNOWN")))
+        table.insert(tooltip_lines, 1, QHFormat("TOOLTIP_OPEN", source.name or "nothing"))
+        licon = 2
+      else
+        table.insert(map_lines, string.format("unknown %s (%s/%s)", tostring(dbgi.name), tostring(v.sourcetype), tostring(v.sourceid)))
+        table.insert(tooltip_lines, 1, string.format("unknown %s (%s/%s)", tostring(last_name), tostring(v.sourcetype), tostring(v.sourceid)))
+        licon = 3
+      end
+      
+      tooltips[string.format("%s@@%s", v.sourcetype, v.sourceid)] = copy_without_last(tooltip_lines)
+      
+      AppendObjlinks(target, dbgi, tooltips, icon or licon, source.name, map_lines, tooltip_lines, seen)
+      table.remove(tooltip_lines, 1)
+      table.remove(map_lines)
+      
+      DB_ReleaseItem(dbgi)
     end
-    
-    tooltips[string.format("%s@@%s", v.sourcetype, v.sourceid)] = copy_without_last(tooltip_lines)
-    
-    AppendObjlinks(target, dbgi, tooltips, icon or licon, source.name, map_lines, tooltip_lines, seen)
-    table.remove(tooltip_lines, 1)
-    table.remove(map_lines)
-    
-    DB_ReleaseItem(dbgi)
   end
 
   seen[source] = false
@@ -110,6 +111,45 @@ end
 local quest_list = setmetatable({}, {__mode="k"})
 
 local QuestCriteriaWarningBroadcast
+
+-- Builds the routing data for objective number i of a quest.
+local function BuildQuestCriteria(ite, q, questid, i)
+  local ttx = {}
+  --QuestHelper:TextOut(string.format("critty %d %d", k, c.loc and #c.loc or -1))
+  
+  ttx.tooltip_canned = {}
+  
+  if q and q.criteria and q.criteria[i] then
+    --print("Appending criteria", questid, i)
+    AppendObjlinks(ttx, q.criteria[i], ttx.tooltip_canned)
+    --print("Done")
+    
+    if debug_output and q.criteria[i].loc and #q.criteria[i] > 0 then
+      QuestHelper:TextOut(string.format("Wackyquest %d/%d", questid, i))
+    end
+    
+    ttx.solid = horribledupe(q.criteria[i].solid)
+  end
+  
+  if #ttx == 0 then
+    table.insert(ttx, {loc = {x = 5000, y = 5000, c = 0, p = 2}, icon_id = 7, type_quest_unknown = true, map_desc = {"Unknown"}})  -- this is Ashenvale, for no particularly good reason
+    ttx.type_quest_unknown = true
+  end
+  
+  for idx, v in ipairs(ttx) do
+    v.desc = string.format("Criteria %d", i)
+    v.why = ite
+    v.cluster = ttx
+    v.type_quest = ite.type_quest
+    v.tracker_order = i
+  end
+  
+  for k, v in pairs(ttx.tooltip_canned) do
+    ttx.tooltip_canned[k] = {ttx.tooltip_canned[k], ttx} -- we're gonna be handing out this table to other modules, so this isn't as dumb as it looks
+  end
+  
+  ite[i] = ttx
+end
 
 local function GetQuestMetaobjective(questid, lbcount)
   if not quest_list[questid] then
@@ -140,41 +180,9 @@ local function GetQuestMetaobjective(questid, lbcount)
     ite.desc = string.format("Quest %s", q and q.name or "(unknown)")  -- this gets changed later anyway
     
     for i = 1, lbcount do
-      local ttx = {}
-      --QuestHelper:TextOut(string.format("critty %d %d", k, c.loc and #c.loc or -1))
-      
-      ttx.tooltip_canned = {}
-      
-      if q and q.criteria and q.criteria[i] then
-        --print("Appending criteria", questid, i)
-        AppendObjlinks(ttx, q.criteria[i], ttx.tooltip_canned)
-        --print("Done")
-        
-        if debug_output and q.criteria[i].loc and #q.criteria[i] > 0 then
-          QuestHelper:TextOut(string.format("Wackyquest %d/%d", questid, i))
-        end
-        
-        ttx.solid = horribledupe(q.criteria[i].solid)
-      end
-      
-      if #ttx == 0 then
-        table.insert(ttx, {loc = {x = 5000, y = 5000, c = 0, p = 2}, icon_id = 7, type_quest_unknown = true, map_desc = {"Unknown"}})  -- this is Ashenvale, for no particularly good reason
-        ttx.type_quest_unknown = true
-      end
-      
-      for idx, v in ipairs(ttx) do
-        v.desc = string.format("Criteria %d", i)
-        v.why = ite
-        v.cluster = ttx
-        v.type_quest = ite.type_quest
-      end
-      
-      for k, v in pairs(ttx.tooltip_canned) do
-        ttx.tooltip_canned[k] = {ttx.tooltip_canned[k], ttx} -- we're gonna be handing out this table to other modules, so this isn't as dumb as it looks
-      end
-      
-      ite[i] = ttx
+      BuildQuestCriteria(ite, q, questid, i)
     end
+    ite.criteria_built = lbcount
     
     do
       local ttx = {type_quest_finish = true}
@@ -200,6 +208,17 @@ local function GetQuestMetaobjective(questid, lbcount)
     quest_list[questid] = ite
     
     if q then DB_ReleaseItem(q) end
+  elseif lbcount and lbcount > quest_list[questid].criteria_built then
+    -- The client can report fewer objectives than a quest really has while its data is still on the way from the server, and we remember what we built the first time. This used to fail an assert the moment the real objectives showed up.
+    local ite = quest_list[questid]
+    local q = DB_GetItem("quest", questid, true, true)
+    
+    for i = ite.criteria_built + 1, lbcount do
+      BuildQuestCriteria(ite, q, questid, i)
+    end
+    ite.criteria_built = lbcount
+    
+    if q then DB_ReleaseItem(q) end
   end
   
   return quest_list[questid]
@@ -207,11 +226,7 @@ end
 
 
 local function GetQuestType(link)
-  return tonumber(string.match(link,
-    "^|cff%x%x%x%x%x%x|Hquest:(%d+):[%d-]+|h%[[^%]]*%]|h|r$"
-  )), tonumber(string.match(link,
-    "^|cff%x%x%x%x%x%x|Hquest:%d+:([%d-]+)|h%[[^%]]*%]|h|r$"
-  ))
+  return tonumber(string.match(link, "|Hquest:(%d+):[%d-]+|h")), tonumber(string.match(link, "|Hquest:%d+:([%d-]+)|h"))  -- not anchored to the title, which can contain brackets of its own
 end
 
 local update = true
@@ -232,7 +247,12 @@ local objective_parse_table = {
 }
 
 local function objective_parse(typ, txt, done)
-  local pt, target, have, need = typ, objective_parse_table[typ](txt, done)
+  txt = txt or ""
+  
+  local pt, target, have, need = typ
+  if objective_parse_table[typ] then  -- objective types we've never heard of fall through to the generic parsing below
+    target, have, need = objective_parse_table[typ](txt, done)
+  end
   
   if not target then
     -- well, that didn't work
@@ -273,7 +293,9 @@ local function difficulty_color(position)
 end
 
 local function MakeQuestTitle(title, level)
-  local plevel = UnitLevel("player") -- meh, should probably cache this, buuuuut
+  if type(level) ~= "number" then return title end  -- from a party member, could be anything
+  
+  local plevel = QuestHelper:PlayerLevel()
   local grayd
   
   if plevel >= 60 then
@@ -297,7 +319,7 @@ local function MakeQuestTitle(title, level)
 end
 
 local function MakeQuestObjectiveTitle(progress, target)
-  if not progress then return nil end
+  if not progress or not target then return nil end
   
   local player = UnitName("player")
   
@@ -313,10 +335,17 @@ local function MakeQuestObjectiveTitle(progress, target)
   local party_show = false
   local party_compact = false
   
-  if progress[player] then
-    local have, need = tonumber(progress[player][1]), tonumber(progress[player][2])
+  -- Only one person's on this and it isn't us, so their actual numbers say more than "Party 0/1" would.
+  local shown = progress[player]
+  if not shown and pt == 1 then
+    local _, only = next(progress)
+    shown = only
+  end
+  
+  if shown then
+    local have, need = tonumber(shown[1]), tonumber(shown[2])
     
-    ccode = difficulty_color(progress[player][3])
+    ccode = difficulty_color(shown[3])
     
     if have and need then
       if need > 1 then
@@ -324,7 +353,7 @@ local function MakeQuestObjectiveTitle(progress, target)
         party_compact = true
       end
     else
-      status = string.format("%s/%s", progress[player][1], progress[player][2])
+      status = string.format("%s/%s", shown[1], shown[2])
       party_compact = true
     end
     
@@ -428,8 +457,38 @@ local function SetTooltip(item, typ)
   TooltipType[item] = typ
 end
 
+-- Gets out of an insertion pass that didn't make it to the end. Anything it didn't reach is still in InsertedItems, and the next pass sorts that out. Without this, the next pass would refuse to start, and so would every pass after it.
+local function AbortInsertionPass()
+  in_pass = nil
+  QH_Timeslice_PopUnyieldable()
+end
+
+local own_name  -- the name our own quest log is filed under
+
+-- A quest has left our log. It may well carry on as a party member's quest, but nothing about our log applies to it any more.
+local function ForgetQuestFromLog(quest)
+  QH_Tracker_Unpin(quest.finish[1], true)
+  for i = 1, quest.criteria_built or 0 do
+    if quest[i] and quest[i][1] then QH_Tracker_Unpin(quest[i][1], true) end
+  end
+  quest.type_quest.index, quest.tracker_clicked, quest.tracker_zone, quest.tracker_in_collapsed, quest.tracker_minimised_under = nil, nil, nil, nil, nil
+end
+
+-- Who a quest belongs to if it isn't in our own log: the names of the party members who have it. Nil when it's ours, even if they have it too.
+function QH_Quest_SharedBy(quest)
+  local users = InsertedItems[quest.finish]
+  if not users or users[own_name] then return nil end
+  
+  local names = QuestHelper:CreateTable("quest owners")
+  for name in pairs(users) do table.insert(names, name) end
+  table.sort(names)
+  local owners = (#names > 0) and table.concat(names, ", ") or nil
+  QuestHelper:ReleaseTable(names)
+  return owners
+end
+
 local function StartInsertionPass(id)
-  QuestHelper: Assert(not in_pass)
+  if in_pass then AbortInsertionPass() end
   in_pass = id
   QH_Timeslice_PushUnyieldable()
   for k, v in pairs(InsertedItems) do
@@ -494,11 +553,15 @@ local function EndInsertionPass(id)
       QH_Route_ClusterRemove(k)
       rem[k] = true
       
-      SetTooltip(k, nil)
+      QH_SafeCall(SetTooltip, k, nil)
+    end
+    
+    if id == own_name and not v[id] and k[1] and k[1].why and k[1].why.finish == k then
+      ForgetQuestFromLog(k[1].why)  -- every quest we hold has its turn-in filed under our name, so this one's gone
     end
   end
   
-  QH_Tracker_Rescan()
+  QH_SafeCall(QH_Tracker_Rescan)
   
   for k, _ in pairs(rem) do
     InsertedItems[k] = nil
@@ -555,7 +618,7 @@ function QuestProcessor(user_id, db, title, level, group, variety, groupsize, wa
     if RefreshItem(user_id, turnin, true) then
       turnin_new = true
       for k, v in ipairs(turnin) do
-        v.tracker_clicked = function () Clicky(lindex) end
+        v.tracker_clicked = function () if db.tracker_clicked then db.tracker_clicked() end end  -- looked up when clicked, since the quest's log index moves around
         
         v.map_desc = {QHFormat("OBJECTIVE_REASON_TURNIN", title)}
       end
@@ -581,7 +644,7 @@ function QuestProcessor(user_id, db, title, level, group, variety, groupsize, wa
       end
       
       if type(have) == "number" and type(need) == "number" then
-        db[i].progress[db[i].temp_person] = {have, need, have / need}
+        db[i].progress[db[i].temp_person] = {have, need, need > 0 and have / need or 0}
       else
         db[i].progress[db[i].temp_person] = {have, need, db[i].temp_done and 1 or 0}  -- it's only used for the coloring anyway
       end
@@ -696,110 +759,247 @@ local current_chunks = {}
 
 -- "log" is a synthetic objective that Blizzard tossed in for god only knows what reason, so we just pretend it doesn't exist
 local function GetEffectiveNumQuestLeaderBoards(index)
-  local v = GetNumQuestLeaderBoards(index)
+  local v = GetNumQuestLeaderBoards(index) or 0
   if v ~= 1 then return v end
   if select(2, GetQuestLogLeaderBoard(1, index)) == "log" then return 0 end
   return 1
 end
 
+-- What the quest log looks like right now, boiled down to a string. Used to spot changes we weren't told about.
+local function DescribeQuestLog()
+  local parts = QuestHelper:CreateTable("quest log description")
+  
+  local index = 1
+  while true do
+    local title, _, _, _, is_header, is_collapsed, complete = GetQuestLogTitle(index)
+    if not title then break end
+    
+    table.insert(parts, title)
+    if is_header then
+      table.insert(parts, tostring(is_collapsed))  -- minimising the last heading doesn't move anything, so this is the only sign of it
+    else
+      table.insert(parts, tostring(complete))
+      for i = 1, (GetNumQuestLeaderBoards(index) or 0) do
+        local desc, _, done = GetQuestLogLeaderBoard(i, index)
+        table.insert(parts, tostring(desc))
+        table.insert(parts, tostring(done))
+      end
+    end
+    
+    index = index + 1
+  end
+  
+  local description = table.concat(parts, "\001")
+  QuestHelper:ReleaseTable(parts)
+  return description
+end
+
+local last_log_description
+local scan_player, scan_chunks
+local scan_memory, scan_ids, scan_lone_collapsed
+
+-- Which quest log heading each of this character's quests sits under, by quest ID. Saved, so it's still known after a reload with the heading minimised.
+local function HeadingMemory(player)
+  local all = rawget(QuestHelper_Pref, "quest_headings")
+  if type(all) ~= "table" then
+    all = {}
+    QuestHelper_Pref.quest_headings = all
+  end
+  local key = (GetRealmName() or "") .. "/" .. player
+  if type(all[key]) ~= "table" then all[key] = {} end
+  return all[key]
+end
+
+-- Handles one quest from the log. "zone" is the quest log heading it's sitting under, and "hidden" means that heading is minimised.
+local function ScanQuestLogEntry(index, zone, hidden)
+  local title, level, variety, groupsize, _, _, complete = GetQuestLogTitle(index)
+  
+  title = title:match("^%[[^%]]*%] (.*)") or title  -- some addons put the level in front of the name
+  
+  local qlink = GetQuestLink(index)
+  if not qlink then return end -- If we don't have a quest link, it's not really a quest
+  
+  local id = GetQuestType(qlink)
+  if not id then return end -- If we don't have a *valid* quest link, give up
+  
+  local player = scan_player
+  local lbcount = GetEffectiveNumQuestLeaderBoards(index)
+  local db = GetQuestMetaobjective(id, lbcount) -- This generates the above-mentioned metaobjective, including doing the database lookup.
+  
+  QuestHelper: Assert(db)
+  
+  local watched = IsQuestWatched(index)
+  
+  -- The section in here, in other words, is: we have a metaobjective (which may be a new one, or may not be), and we're trying to attach things to our routing engine. Now is where the real work begins! (many conditionals deep)
+  local lindex = index
+  db.tracker_clicked = function () Clicky(lindex) end
+  db.tracker_zone = zone
+  db.tracker_in_collapsed = hidden or nil
+  
+  -- The game won't say which heading a quest under a minimised heading belongs to, so it's remembered from whenever that heading was open.
+  if hidden then
+    if not scan_memory[id] and scan_lone_collapsed then scan_memory[id] = scan_lone_collapsed end
+    db.tracker_minimised_under = scan_memory[id]
+  else
+    db.tracker_minimised_under = nil
+    if zone then scan_memory[id] = zone end
+  end
+  scan_ids[id] = true
+  
+  db.type_quest.index = index
+  
+  local timidx = 1
+  while true do
+    local timer = GetQuestIndexForTimer(timidx)
+    if not timer then timidx = nil break end
+    if timer == index then break end
+    timidx = timidx + 1
+  end
+  local timed = not not timidx
+  
+  --print(id, title, level, groupsize, variety, groupsize, complete, timed)
+  local chunk = "q:" .. Serialize(id, title, level, groupsize, variety, groupsize, complete, timed)
+  for i = 1, lbcount do
+    db[i].temp_desc, db[i].temp_typ, db[i].temp_done = GetQuestLogLeaderBoard(i, index)
+    if not db[i].temp_desc or db[i].temp_desc == "" then
+      db[i].temp_desc = "(loading...)"  -- the client hasn't got this one yet. CheckForMissedUpdates will pick up the real text when it arrives.
+    end
+    db[i].temp_person = player
+    
+    db[i].tooltip_defer_questname = title
+    db[i].tooltip_defer_questobjective = db[i].temp_desc -- yoink
+    
+    chunk = chunk .. ":" .. Serialize(db[i].temp_desc, db[i].temp_typ, db[i].temp_done)
+  end
+  
+  db.finish.tooltip_defer_questname = title -- we're using this as our fallback right now
+  
+  scan_chunks[id] = chunk
+  
+  QuestProcessor(player, db, title, level, groupsize, variety, groupsize, watched, complete, lbcount, timed)
+end
+
+-- The quest log's headings as of the last scan, top to bottom.
+local quest_log_headings, quest_log_heading_by_name = {}, {}
+
+function QH_QuestLog_Headings()
+  return quest_log_headings
+end
+
+-- {name =, index =, collapsed =}, or nil if the quest log has no heading by that name.
+function QH_QuestLog_Heading(name)
+  return quest_log_heading_by_name[name]
+end
+
+-- Minimises or opens a quest log heading, the same as clicking it in the quest log. Returns false if there's no heading by that name.
+function QH_QuestLog_ToggleHeading(name)
+  local visible = GetNumQuestLogEntries() or 0
+  for index = 1, visible do
+    local title, _, _, _, is_header, is_collapsed = GetQuestLogTitle(index)
+    if is_header and title == name then
+      -- Found fresh every time, because handed anything that isn't a heading, these two act on every heading at once.
+      if is_collapsed then ExpandQuestHeader(index) else CollapseQuestHeader(index) end
+      if QuestLogFrame and QuestLogFrame:IsShown() then QuestLog_Update() end
+      QH_UpdateQuests(true)
+      return true
+    end
+  end
+  return false
+end
+
+local function ScanQuestLog(player)
+  own_name = player
+  StartInsertionPass(player)
+  scan_memory, scan_ids, scan_lone_collapsed = HeadingMemory(player), {}, nil
+  
+  scan_player, scan_chunks = player, {}
+  local failed = false
+  
+  -- The log lists each heading followed by its quests, except that quests under a minimised heading come after everything else, with no headings, so there's no telling which heading they belong to.
+  local visible = GetNumQuestLogEntries()
+  if not visible or visible < 1 then visible = math.huge end
+  local headings, heading_by_name = {}, {}
+  
+  -- This begins the main update loop that loops through all of the quests
+  local zone, zone_collapsed
+  local index = 1
+  while true do
+    local title, _, _, _, is_header, is_collapsed = GetQuestLogTitle(index)
+    if not title then break end
+    
+    if is_header then
+      zone, zone_collapsed = title, not not is_collapsed
+      if index <= visible and not heading_by_name[title] then
+        heading_by_name[title] = {name = title, index = index, collapsed = zone_collapsed}
+        table.insert(headings, heading_by_name[title])
+      end
+    else
+      local hidden = index > visible or zone_collapsed
+      if hidden and scan_lone_collapsed == nil then
+        -- With only one minimised heading, everything hidden has to be under it.
+        scan_lone_collapsed = false
+        for _, heading in ipairs(headings) do
+          if heading.collapsed then
+            if scan_lone_collapsed then scan_lone_collapsed = false break end
+            scan_lone_collapsed = heading.name
+          end
+        end
+      end
+      if not QH_SafeCall(ScanQuestLogEntry, index, (not hidden) and zone or nil, hidden) then
+        failed = true  -- one quest going wrong is no reason to stop updating all the others
+      end
+    end
+    
+    index = index + 1
+  end
+  
+  quest_log_headings, quest_log_heading_by_name = headings, heading_by_name
+  
+  if not failed then
+    for id in pairs(scan_memory) do
+      if not scan_ids[id] then scan_memory[id] = nil end  -- no longer in the log
+    end
+  end
+  
+  EndInsertionPass(player)
+  
+  QH_Route_Filter_Rescan(nil, true)  -- 'cause filters may also change, but let's not bother getting too excited about it
+  
+  local next_chunks = scan_chunks
+  
+  if not QuestHelper_Pref.solo and QuestHelper_Pref.share then
+    for k, v in pairs(next_chunks) do
+      if current_chunks[k] ~= v then
+        SAM(v, "PARTY")
+      end
+    end
+    
+    for k, v in pairs(current_chunks) do
+      if not next_chunks[k] then
+        SAM(string.format("q:n%d", k), "PARTY")
+      end
+    end
+  end
+  
+  current_chunks = next_chunks
+  
+  last_log_description = (not failed) and DescribeQuestLog() or ""  -- if something failed, CheckForMissedUpdates will see a difference and try again shortly
+  --update = false
+end
+
 -- Here's the core update function
 function QH_UpdateQuests(force)
   if not DB_Ready() then return end
+  if in_pass then return end  -- already busy
+  
+  local player = UnitName("player")
+  if not player or player == UNKNOWNOBJECT then return end -- bzzt, try again later
+  
   QH_Timeslice_PushUnyieldable()
 
   if update or force then  -- Sometimes (usually) we don't actually update
-    local index = 1
-    
-    local player = UnitName("player")
-    if not player then return end -- bzzt, try again later
-    StartInsertionPass(player)
-    
-    local next_chunks = {}
-    
-    local first = true
-    
-    -- This begins the main update loop that loops through all of the quests
-    while true do
-      local title, level, variety, groupsize, _, _, complete = GetQuestLogTitle(index)
-      if not title then break end
-      
-      title = title:match("%[.*%] (.*)") or title
-      
-      local qlink = GetQuestLink(index)
-      if qlink then -- If we don't have a quest link, it's not really a quest
-        local id = GetQuestType(qlink)
-        --if first then id = 13836 else id = nil end
-        if id then -- If we don't have a *valid* quest link, give up
-          local lbcount = GetEffectiveNumQuestLeaderBoards(index)
-          local db = GetQuestMetaobjective(id, lbcount) -- This generates the above-mentioned metaobjective, including doing the database lookup.
-          
-          QuestHelper: Assert(db)
-          
-          local watched = IsQuestWatched(index)
-          
-          -- The section in here, in other words, is: we have a metaobjective (which may be a new one, or may not be), and we're trying to attach things to our routing engine. Now is where the real work begins! (many conditionals deep)
-          local lindex = index
-          db.tracker_clicked = function () Clicky(lindex) end
-          
-          db.type_quest.index = index
-          
-          local timidx = 1
-          while true do
-            local timer = GetQuestIndexForTimer(timidx)
-            if not timer then timidx = nil break end
-            if timer == index then break end
-            timidx = timidx + 1
-          end
-          local timed = not not timidx
-          
-          --print(id, title, level, groupsize, variety, groupsize, complete, timed)
-          local chunk = "q:" .. Serialize(id, title, level, groupsize, variety, groupsize, complete, timed)
-          for i = 1, lbcount do
-            QuestHelper: Assert(db[i])
-            db[i].temp_desc, db[i].temp_typ, db[i].temp_done = GetQuestLogLeaderBoard(i, index)
-            --[[if not db[i].temp_desc or is_uncached(db[i].temp_typ, db[i].temp_desc, db[i].temp_done) then
-              db[i].temp_desc = string.format("(missing description %d)", i)
-            end]]
-            db[i].temp_person = player
-            
-            db[i].tooltip_defer_questname = title
-            db[i].tooltip_defer_questobjective = db[i].temp_desc -- yoink
-            QuestHelper: Assert(db[i].tooltip_defer_questobjective)  -- hmmm
-            
-            chunk = chunk .. ":" .. Serialize(db[i].temp_desc, db[i].temp_typ, db[i].temp_done)
-          end
-          
-          db.finish.tooltip_defer_questname = title -- we're using this as our fallback right now
-          
-          next_chunks[id] = chunk
-          
-          QuestProcessor(player, db, title, level, groupsize, variety, groupsize, watched, complete, lbcount, timed)
-        end
-        first = false
-      end
-      index = index + 1
-    end
-    
-    EndInsertionPass(player)
-    
-    QH_Route_Filter_Rescan(nil, true)  -- 'cause filters may also change, but let's not bother getting too excited about it
-    
-    if not QuestHelper_Pref.solo and QuestHelper_Pref.share then
-      for k, v in pairs(next_chunks) do
-        if current_chunks[k] ~= v then
-          SAM(v, "PARTY")
-        end
-      end
-      
-      for k, v in pairs(current_chunks) do
-        if not next_chunks[k] then
-          SAM(string.format("q:n%d", k), "PARTY")
-        end
-      end
-    end
-    
-    current_chunks = next_chunks
-    --update = false
+    QH_SafeCall(ScanQuestLog, player)
+    if in_pass then AbortInsertionPass() end  -- whatever went wrong, the next update has to be able to run
   end
   
   QH_Timeslice_PopUnyieldable()
@@ -808,34 +1008,45 @@ end
 -- comm_packets[user][qid] = data
 local comm_packets = {}
 
-local function RefreshUserComms(user)
+local function RefreshUserCommPacket(user, dat)
+  local id, title, level, group, variety, groupsize, complete, timed = dat[1], dat[2], dat[3], dat[4], dat[5], dat[6], dat[7], dat[8]
+  local objstart = 9
+  
+  if type(id) ~= "number" or type(title) ~= "string" or type(level) ~= "number" then return end  -- the routing filters rely on these
+  
+  local obj = {}
+  while true do
+    if dat[#obj * 3 + objstart] == nil and dat[#obj * 3 + objstart + 1] == nil and dat[#obj * 3 + objstart + 2] == nil then break end
+    table.insert(obj, {dat[#obj * 3 + objstart], dat[#obj * 3 + objstart + 1], dat[#obj * 3 + objstart + 2]})
+  end
+  
+  local lbcount = #obj
+  local db = GetQuestMetaobjective(id, lbcount) -- This generates the above-mentioned metaobjective, including doing the database lookup.
+
+  QuestHelper: Assert(db)
+  
+  for i = 1, lbcount do
+    db[i].temp_desc, db[i].temp_typ, db[i].temp_done, db[i].temp_person = obj[i][1], obj[i][2], obj[i][3], user
+  end
+  
+  QuestProcessor(user, db, title, level, group, variety, groupsize, "(ignore)", complete, lbcount, false)
+end
+
+local function RefreshUserCommsPass(user)
   StartInsertionPass(user)
   
   if comm_packets[user] then for _, dat in pairs(comm_packets[user]) do
-    local id, title, level, group, variety, groupsize, complete, timed = dat[1], dat[2], dat[3], dat[4], dat[5], dat[6], dat[7], dat[8]
-    local objstart = 9
-    
-    local obj = {}
-    while true do
-      if dat[#obj * 3 + objstart] == nil and dat[#obj * 3 + objstart + 1] == nil and dat[#obj * 3 + objstart + 2] == nil then break end
-      table.insert(obj, {dat[#obj * 3 + objstart], dat[#obj * 3 + objstart + 1], dat[#obj * 3 + objstart + 2]})
-    end
-    
-    local lbcount = #obj
-    local db = GetQuestMetaobjective(id, lbcount) -- This generates the above-mentioned metaobjective, including doing the database lookup.
-
-    QuestHelper: Assert(db)
-    
-    for i = 1, lbcount do
-      db[i].temp_desc, db[i].temp_typ, db[i].temp_done, db[i].temp_person = obj[i][1], obj[i][2], obj[i][3], user
-    end
-    
-    QuestProcessor(user, db, title, level, group, variety, groupsize, "(ignore)", complete, lbcount, false)
+    QH_SafeCall(RefreshUserCommPacket, user, dat)  -- a garbled packet from someone else's client shouldn't affect us
   end end
 
   EndInsertionPass(user)
   
   QH_Route_Filter_Rescan()  -- 'cause filters may also change
+end
+
+local function RefreshUserComms(user)
+  QH_SafeCall(RefreshUserCommsPass, user)
+  if in_pass then AbortInsertionPass() end
 end
 
 function QH_InsertCommPacket(user, data)
@@ -848,6 +1059,8 @@ function QH_InsertCommPacket(user, data)
     dat[idx] = DeSerItem(item)
     idx = idx + 1
   end
+  
+  if dat[1] == nil then return end
   
   if not comm_packets[user] then comm_packets[user] = {} end
   if idx == 2 then
@@ -883,12 +1096,15 @@ QH_AddNotifier(GetTime() + 5, function ()
   end
 end)
 
--- We seem to end up out of sync sometimes. Why? I'm not sure. Maybe my current events aren't reliable. So let's just scan every five seconds and see what happens, scanning is fast and efficient anyway.
---[[local function autonotify()
-  QH_UpdateQuests(true)
-  QH_AddNotifier(GetTime() + 5, autonotify)
+-- We seem to end up out of sync sometimes. Why? I'm not sure. Maybe my current events aren't reliable. So every few seconds we compare the quest log with what we last saw, and only do a real update if it's different - a real update makes the router start over.
+local function CheckForMissedUpdates()
+  QH_AddNotifier(GetTime() + 3, CheckForMissedUpdates)  -- before anything else, so that nothing below can end the cycle
+  
+  if last_log_description and DescribeQuestLog() ~= last_log_description then
+    QH_UpdateQuests(true)
+  end
 end
-QH_AddNotifier(GetTime() + 30, autonotify)]]
+QH_AddNotifier(GetTime() + 30, CheckForMissedUpdates)
 
 local old_playerlist = {}
 
@@ -912,7 +1128,8 @@ function QH_Questcomm_Sync()
       if liv and not relm and liv ~= UNKNOWNOBJECT and UnitIsConnected(targ) then playerlist[liv] = true end
     end
   end
-  playerlist[UnitName("player")] = nil
+  local me = UnitName("player")
+  if me then playerlist[me] = nil end
   
   local additions = {}
   for k, v in pairs(playerlist) do

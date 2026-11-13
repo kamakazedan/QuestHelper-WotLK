@@ -185,7 +185,7 @@ local function CompareStaticObjective(info, cat, name, data, verbose)
       updated = DropListUpdated(data.drop, static.drop) and DropListMass(data.drop) > PositionListMass(static.pos)
       if updated and verbose then QuestHelper:TextOut(string.gsub(cat, "^(.)", string.upper).." "..QuestHelper:HighlightText(name).." was missing monster drop.") end
     elseif data.pos and not static.vendor and not static.drop then
-      if updated and verbose then QuestHelper:TextOut(Qstring.gsub(cat, "^(.)", string.upper).." "..QuestHelper:HighlightText(name).." was missing position.") end
+      if updated and verbose then QuestHelper:TextOut(string.gsub(cat, "^(.)", string.upper).." "..QuestHelper:HighlightText(name).." was missing position.") end
       updated = PositionListUpdated(data.pos, static.pos)
     end
     

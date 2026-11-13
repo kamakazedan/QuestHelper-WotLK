@@ -336,7 +336,7 @@ function QH_Arrow_PopulateMenu(menu)
     else
       icon:SetVertexColor(1, 1, 1, 0)
     end
-    it:AddTexture(icon)
+    it:AddTexture(icon, true)
   end
   
   local tscale = QuestHelper:CreateMenuItem(menu, "Text Scale")
@@ -353,7 +353,7 @@ function QH_Arrow_PopulateMenu(menu)
     else
       icon:SetVertexColor(1, 1, 1, 0)
     end
-    it:AddTexture(icon)
+    it:AddTexture(icon, true)
   end
   
   local reset = QuestHelper:CreateMenuItem(menu, QHText("SETTINGS_MENU_ARROW_RESET"))

@@ -24,8 +24,7 @@ local function ScanAchievements(oldADB, newADB)
   
   if changes < 10 then -- if someone gets 10 criteria at once, well, I guess that's just what happens
     for k, v in pairs(newADB.achievements) do
-      if v.complete ~= oldADB.achievements[k].complete then
-        QuestHelper: Assert(v.complete and not oldADB.achievements[k].complete)
+      if v.complete and not oldADB.achievements[k].complete then
         if not QHCA[k] then QHCA[k] = {} end
         QHCA[k].achieved = (QHCA[k].achieved or "") .. cloc
         

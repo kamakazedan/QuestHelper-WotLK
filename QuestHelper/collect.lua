@@ -31,7 +31,7 @@ local function CollectTooltippery(self)
   if not self then self = GameTooltip end
   
   for k, v in pairs(TooltipRegistrar) do
-    v(self)
+    QH_SafeCall(v, self)
   end
   
   -- anything past here is not my fault
@@ -145,7 +145,7 @@ end
 QH_OnUpdate(function ()
   local tstart = GetTime()
   for _, v in pairs(OnUpdateRegistrar) do
-    v()
+    QH_SafeCall(v)
   end
   QH_Timeslice_Increment(GetTime() - tstart, "collect_update")
 end)

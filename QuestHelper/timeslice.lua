@@ -37,8 +37,7 @@ function QH_Timeslice_PushUnyieldable()
   unyieldable = unyieldable + 1
 end
 function QH_Timeslice_PopUnyieldable()
-  unyieldable = unyieldable - 1
-  QuestHelper: Assert(unyieldable >= 0)
+  unyieldable = math.max(unyieldable - 1, 0)
 end
 function QH_Timeslice_Yield()
   if unyieldable > 0 then return end
@@ -77,7 +76,8 @@ local prioritize = {
 
 local bumped_priority = {}
 
-function QH_Timeslice_Add(workfunc, name)
+-- If "recover" is given, the thread is restarted after an error instead of being lost for the rest of the session. recover is called first, to clear up whatever the thread was in the middle of.
+function QH_Timeslice_Add(workfunc, name, recover)
   QuestHelper: Assert(workfunc)
   QuestHelper: Assert(name)
   local priority = prioritize[name] and prioritize[name][1] or 0
@@ -85,7 +85,7 @@ function QH_Timeslice_Add(workfunc, name)
   if coroutine_verbose then QuestHelper:TextOut(string.format("timeslice: %s added (%s, %d)", name, tostring(workfunc), priority)) end
   local ncoro = coroutine.create(workfunc)
   QuestHelper: Assert(ncoro)
-  table.insert(coroutine_list, {priority = priority, sharding = sharding, name = name, coro = ncoro, active = true})
+  table.insert(coroutine_list, {priority = priority, sharding = sharding, name = name, coro = ncoro, active = true, workfunc = workfunc, recover = recover})
 end
 
 function QH_Timeslice_Toggle(name, flag)
@@ -134,14 +134,19 @@ local thrown_away_excess = 0
 local total_used = 0
 
 function QH_Timeslice_Work(time_used, time_this_frame, bonus_time, verbose)
-  -- There's probably a better way to do this, but. Eh. Lua.
-  QuestHelper: Assert(unyieldable == 0)
+  -- We only get called between frames, so nothing can legitimately be holding this. If it's set, something bailed out without popping it. This used to be an assert, which meant one slip stopped routing for the rest of the session.
+  if unyieldable ~= 0 then
+    QuestHelper_ErrorCatcher_ExplicitError(false, string.format("Unyieldable count was left at %d", unyieldable))
+    unyieldable = 0
+  end
   
+  -- There's probably a better way to do this, but. Eh. Lua.
   local coro = nil
   local key = nil
   local cpri = nil
+  local now = GetTime()
   for k, v in pairs(coroutine_list) do
-    if v.active then
+    if v.active and not (v.retry_at and v.retry_at > now) then
       --if v.sharding then QuestHelper:TextOut(string.format("%d mod %d is %d, %s", time(), v.sharding, bit.mod(time(), v.sharding), tostring(bit.mod(time(), v.sharding) == 0))) end
       local pri = bumped_priority[v.name] or v.priority
       if (not v.sharding or bit.mod(time(), v.sharding) == 0) and (not coro or (pri > cpri)) then
@@ -157,8 +162,8 @@ function QH_Timeslice_Work(time_used, time_this_frame, bonus_time, verbose)
     
     if coroutine.status(coro.coro) == "dead" then   -- Someone was claiming to get an infinite loop with this. I don't see how it's possible, but this should at least fix the infinite loop.
       coroutine_list[key] = nil
+      return
     end
-      QuestHelper: Assert(coroutine.status(coro.coro) ~= "dead")
     
     local slicefactor = (QuestHelper_Pref.hide and 0.01 or (QuestHelper_Pref.perf_scale_2 * math.min(coroutine_route_pass, 5)))
     if not started then slicefactor = 5 * QuestHelper_Pref.perfload_scale * math.min(coroutine_route_pass, 5) end  -- the init process gets much higher priority so we get done with it faster
@@ -186,10 +191,9 @@ function QH_Timeslice_Work(time_used, time_this_frame, bonus_time, verbose)
     
     if start < coroutine_stop_time then -- We don't want to just return on failure because we want to credit the exceeded time properly.
       coroutine_running = true
-      QuestHelper: Assert(unyieldable == 0)
       state, err = coroutine.resume(coro.coro)
-      QuestHelper: Assert(unyieldable == 0)
       coroutine_running = false
+      unyieldable = 0  -- only non-zero if the thread died while holding it
     end
     local stop = GetTime()
     
@@ -206,9 +210,20 @@ function QH_Timeslice_Work(time_used, time_this_frame, bonus_time, verbose)
     if not state then
       if coroutine_verbose then QuestHelper:TextOut(string.format("timeslice: %s errored", coro.name)) end
       QuestHelper_ErrorCatcher_ExplicitError(true, err, "", string.format("(Coroutine error in %s)\n", coro.name))
+      
+      if coro.recover then
+        -- Bring it back, backing off if it keeps dying so a repeatable failure can't eat the framerate.
+        local crashtime = GetTime()
+        if coro.last_crash and coro.last_crash + 300 < crashtime then coro.crashes = 0 end
+        coro.crashes = (coro.crashes or 0) + 1
+        coro.last_crash = crashtime
+        coro.retry_at = crashtime + math.min(2 ^ coro.crashes, 60)
+        
+        QH_SafeCall(coro.recover)
+        coro.coro = coroutine.create(coro.workfunc)
+      end
     end
     
-    QuestHelper: Assert(coro.coro)
     if coroutine.status(coro.coro) == "dead" then
       if coroutine_verbose then QuestHelper:TextOut(string.format("timeslice: %s complete", coro.name)) end
       coroutine_list[key] = nil

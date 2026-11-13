@@ -405,6 +405,13 @@ end
 local last_best = nil
 local last_best_tweaked = false
 
+-- The routing thread died. The current best route may have been half-edited, so forget it and let the ants find a new one.
+function QH_Route_Core_Recover()
+  last_best = nil
+  last_best_tweaked = false
+  early_exit = false
+end
+
 local function ValidateNumber(x)
   QuestHelper: Assert(x == x)
   QuestHelper: Assert(x ~= math.huge)
@@ -522,7 +529,7 @@ end
     last_best_tweaked = true
     
     QuestHelper:ReleaseTable(dl_lookup)
-    QuestHelper:CreateTable(dlr_lookup)
+    QuestHelper:ReleaseTable(dlr_lookup)
   end
 -- end realtime splice
 
@@ -1271,6 +1278,7 @@ function QH_Route_Core_ClusterRemove(clust, clustid_used)
     end
   else
     clustid = ClusterTableLookup[clust]
+    if not clustid then return end  -- This can just happen due to the lag introduced by the controller, so, whatever
   end
 
   do
@@ -1369,8 +1377,7 @@ function QH_Route_Core_ClusterRequires(a, b, hackery)
     aidx = ClusterTableLookup[a]
     bidx = ClusterTableLookup[b]
   end
-  QuestHelper: Assert(aidx)
-  QuestHelper: Assert(bidx)
+  if not aidx or not bidx then return end  -- This can just happen due to the lag introduced by the controller, so, whatever
   QuestHelper: Assert(aidx ~= bidx)
   
   if debug_output then QuestHelper:TextOut(string.format("Linking cluster %d needs %d", aidx, bidx)) end

@@ -1,11 +1,11 @@
 QuestHelper_File["filter_base.lua"] = "1.4.1"
 QuestHelper_Loadtime["filter_base.lua"] = GetTime()
 
-local avg_level = UnitLevel("player")
+local avg_level = QuestHelper:PlayerLevel()
 local count = 1
 
 function QH_Filter_Group_Sync()
-  avg_level = UnitLevel("player")
+  avg_level = QuestHelper:PlayerLevel()
   count = 1
   
   if not QuestHelper_Pref.solo then
@@ -15,7 +15,7 @@ function QH_Filter_Group_Sync()
       -- we is in a raid
       for i = 1, 40 do
         local liv = UnitLevel(string.format("raid%d", i))
-        if liv >= 1 then
+        if liv and liv >= 1 then
           avg_level = avg_level + liv
           count = count + 1
         end
@@ -24,7 +24,7 @@ function QH_Filter_Group_Sync()
       -- we is in a party
       for i = 1, 4 do
         local liv = UnitLevel(string.format("party%d", i))
-        if liv >= 1 then
+        if liv and liv >= 1 then
           avg_level = avg_level + liv
           count = count + 1
         end
@@ -32,10 +32,8 @@ function QH_Filter_Group_Sync()
     end
   end
   
-  if count == 0 then -- welp
-    QuestHelper:TextOut("This should never, ever happen. Please tell Zorba about it!")
-    QuestHelper: Assert(false)
-    avg_level = UnitLevel("player")
+  if count == 0 then -- welp. Happens if the whole raid's still loading in.
+    avg_level = QuestHelper:PlayerLevel()
     count = 1
   end
   
@@ -72,7 +70,7 @@ local filter_quest_level = QH_MakeFilter("filter_quest_level", function(obj)
   
   local qtx
   if obj.type_quest.variety == GROUP then
-    if obj.type_quest.groupsize > 0 then
+    if (obj.type_quest.groupsize or 0) > 0 then
       qtx = VirtualLevel(obj.type_quest.level, obj.type_quest.groupsize, false)
     else
       qtx = VirtualLevel(obj.type_quest.level, 5, false)  -- meh
@@ -97,7 +95,7 @@ local filter_quest_group = QH_MakeFilter("filter_quest_group", function(obj)
   
   local expected_players = 1
   if obj.type_quest.variety == GROUP then
-    if obj.type_quest.groupsize > 0 then
+    if (obj.type_quest.groupsize or 0) > 0 then
       expected_players = obj.type_quest.groupsize
     else
       expected_players = 5

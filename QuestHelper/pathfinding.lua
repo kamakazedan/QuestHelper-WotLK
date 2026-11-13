@@ -276,7 +276,7 @@ function load_graph_links()
 
   local function do_routes(routes)
     for _, v in ipairs(routes) do
-      if not v.level_limit or v.level_limit <= UnitLevel("player") then
+      if not v.level_limit or v.level_limit <= QuestHelper:PlayerLevel() then
         local src = convert_coordinate(v[1])
         local dst = convert_coordinate(v[2])
         QuestHelper: Assert(src.x and dst.x)

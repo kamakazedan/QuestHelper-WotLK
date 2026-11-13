@@ -128,6 +128,7 @@ QuestHelper_Translations.enUS =
   SHARING_DISABLE = "Don't Share",
   IGNORE = "Ignore",
   IGNORE_LOCATION = "Ignore this location",
+  STOP_IGNORING = "Stop Ignoring",
   
   IGNORED_PRIORITY_TITLE = "The selected priority would be ignored.",
   IGNORED_PRIORITY_FIX = "Apply same priority to the blocking objectives.",
@@ -220,6 +221,7 @@ QuestHelper_Translations.enUS =
   
   -- Stuff used by dodads.
   PEER_PROGRESS = "%1's progress:",
+  PEER_QUESTS = "%1's quests",
   TRAVEL_ESTIMATE = "Estimated travel time:",
   TRAVEL_ESTIMATE_VALUE = "%t1",
   WAYPOINT_REASON = "Visit %h1 en route to:",

@@ -8,13 +8,53 @@ local UserIgnored = {
   friendly_reason = QHText("FILTERED_USER"),
   AddException = function(self, node)
     QH_Route_UnignoreNode(node, self) -- there isn't really state with this one
+    if node.cluster then QH_Route_UnignoreCluster(node.cluster, self) end  -- "Ignore" works on the whole objective, so "Show" has to as well
   end
 }
 
-function QuestHelper:AddObjectiveOptionsToMenu(obj, menu)
+local function SetClusterPriorities(clusters, priority)
+  for _, clust in ipairs(clusters) do
+    QH_Route_SetClusterPriority(clust, priority)
+  end
+end
+
+local function IgnoreClusters(clusters)
+  for _, clust in ipairs(clusters) do
+    QH_Route_IgnoreCluster(clust, UserIgnored) -- There is probably a nasty race condition here. I'm not entirely happy about it.
+  end
+end
+
+local function UnignoreClusters(clusters)
+  for _, clust in ipairs(clusters) do
+    QH_Route_UnignoreCluster(clust, UserIgnored)
+  end
+end
+
+local function IgnoredByUser(clust)
+  local ignored = false
+  if QH_Route_GetClusterPriority(clust) then  -- only asks about things that are actually in the route
+    QH_Route_IgnoredReasons_Cluster(clust, function (reason)
+      if reason == UserIgnored then ignored = true end
+    end)
+  end
+  return ignored
+end
+
+-- clusters is the one objective behind a map icon or a line in the tracker, or every unfinished part of a quest when it's the quest's title that was clicked.
+function QuestHelper:AddClusterOptionsToMenu(clusters, menu, suppress_ignore)
+  if #clusters == 0 then return end
+  
   local submenu = self:CreateMenu()
   
-  local pri = (QH_Route_GetClusterPriority(obj.cluster) or 0) + 3
+  -- The parts of a quest can be set separately, in which case there's no one answer to tick.
+  local pri = (QH_Route_GetClusterPriority(clusters[1]) or 0) + 3
+  for _, clust in ipairs(clusters) do
+    if (QH_Route_GetClusterPriority(clust) or 0) + 3 ~= pri then
+      pri = nil
+      break
+    end
+  end
+  
   for i = 1, 5 do
     local name = QHText("PRIORITY"..i)
     local item = self:CreateMenuItem(submenu, name)
@@ -28,33 +68,28 @@ function QuestHelper:AddObjectiveOptionsToMenu(obj, menu)
     end
     
     item:AddTexture(tex, true)
-    item:SetFunction(QH_Route_SetClusterPriority, obj.cluster, i - 3)
+    item:SetFunction(SetClusterPriorities, clusters, i - 3)
   end
   
   self:CreateMenuItem(menu, QHText("PRIORITY")):SetSubmenu(submenu)
   
-  --[[if self.sharing then
-    submenu = self:CreateMenu()
-    local item = self:CreateMenuItem(submenu, QHText("SHARING_ENABLE"))
-    local tex = self:CreateIconTexture(item, 10)
-    if not obj.want_share then tex:SetVertexColor(1, 1, 1, 0) end
-    item:AddTexture(tex, true)
-    item:SetFunction(obj.Share, obj)
+  if not suppress_ignore then
+    local ignored = false
+    for _, clust in ipairs(clusters) do
+      if IgnoredByUser(clust) then ignored = true end
+    end
     
-    local item = self:CreateMenuItem(submenu, QHText("SHARING_DISABLE"))
-    local tex = self:CreateIconTexture(item, 10)
-    if obj.want_share then tex:SetVertexColor(1, 1, 1, 0) end
-    item:AddTexture(tex, true)
-    item:SetFunction(obj.Unshare, obj)
-    
-    self:CreateMenuItem(menu, QHText("SHARING")):SetSubmenu(submenu)
-  end]]
-  
-  --self:CreateMenuItem(menu, "(No options available)")
-  
-  if not obj.map_suppress_ignore then
-    self:CreateMenuItem(menu, QHText("IGNORE")):SetFunction(function () QH_Route_IgnoreCluster(obj.cluster, UserIgnored) end) -- There is probably a nasty race condition here. I'm not entirely happy about it.
+    if ignored then
+      self:CreateMenuItem(menu, QHText("STOP_IGNORING")):SetFunction(UnignoreClusters, clusters)
+    else
+      self:CreateMenuItem(menu, QHText("IGNORE")):SetFunction(IgnoreClusters, clusters)
+    end
   end
+end
+
+function QuestHelper:AddObjectiveOptionsToMenu(obj, menu)
+  self:AddClusterOptionsToMenu({obj.cluster}, menu, obj.map_suppress_ignore)
+  
   if obj.map_custom_menu then
     obj.map_custom_menu(menu)
   end

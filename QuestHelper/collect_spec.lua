@@ -33,7 +33,7 @@ local racelookup = {
 
 local function GetSpecBolus()
   local _, id = UnitClass("player")
-  local level = UnitLevel("player")
+  local level = QuestHelper:PlayerLevel()
   local _, race = UnitRace("player")
   
   --[[ assert(racelookup[race]) ]]
@@ -43,13 +43,13 @@ local function GetSpecBolus()
   for t = 1, GetNumTalentTabs() do -- come on. Is this ever not going to be 3? Seriously?
     for ta = 1, GetNumTalents(t) do
       local _, _, _, _, rank, _ = GetTalentInfo(t, ta)
-      bso:append(rank, 3)
+      bso:append(rank or 0, 3)
     end
     bso:append(6, 3)  -- no 6-point talents, so we use this as an end-of-tree market
   end
   bso:append(7, 3) -- end-of-spec! because of *all of those 4-tree classes*
   
-  return string.format("2%s%s%02d", classlookup[id], racelookup[race] or "", level) .. bso:finish()
+  return string.format("2%s%s%02d", classlookup[id] or "", racelookup[race] or "", level) .. bso:finish()
 end
 
 function QH_Collect_Spec_Init(_, API)

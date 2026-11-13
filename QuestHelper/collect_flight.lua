@@ -38,11 +38,12 @@ local phase = "IDLE"
 
 local real_TakeTaxiNode = TakeTaxiNode
 TakeTaxiNode = function(id)
-  path, route = GetRoute(GetCurrentname(), id)
-  
-  phase = "PENDING"
-  
-  start_time = GetTime()
+  local currentname = GetCurrentname()
+  if currentname then  -- the flight has to go ahead whether or not we can work out what to record about it
+    path, route = GetRoute(currentname, id)
+    phase = "PENDING"
+    start_time = GetTime()
+  end
   
   real_TakeTaxiNode(id)
 end
@@ -84,6 +85,7 @@ local function OnUpdate()
       end
     elseif phase == "FLYING" then
       -- yaay
+      if not QHCFT[path] then QHCFT[path] = {} end
       QHCFT[path][route] = (type(QHCFT[path][route]) == "number" and QHCFT[path][route] or 0) + (GetTime() - start_time)
       QHCFT[path][route .. "##count"] = (QHCFT[path][route .. "##count"] or 0) + 1
       phase = "IDLE"

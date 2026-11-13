@@ -32,6 +32,7 @@ local QuestHelper_DefaultPref =
   track_level=true,
   track_qcolour=true,
   track_ocolour=true,
+  track_zones=true,
   track_size=10,
   blizzmap = false,
   tooltip=true,
@@ -465,7 +466,7 @@ QH_Event("ADDON_LOADED", function (addonid)
     DB_Init()
     QuestHelper.loading_init3:SetPercentage(0.9)
     
-    self.player_level = UnitLevel("player")
+    self.player_level = self:PlayerLevel()
 
     self:SetLocaleFonts()
 
@@ -643,6 +644,25 @@ QH_Event("ADDON_LOADED", function (addonid)
     QH_Event({"PARTY_MEMBERS_CHANGED", "RAID_ROSTER_UPDATE"}, function ()
       QH_Questcomm_Sync()
     end)
+    
+    -- Roster events turn up in the middle of a loading screen, when nobody's details are available, so whatever those saw has to be redone once we've arrived. The group can still be trickling in when the screen lifts, hence the second look.
+    local function GroupResync()
+      QH_Filter_Group_Sync()
+      QH_Route_Filter_Rescan("filter_quest_level")
+      QH_Questcomm_Sync()
+    end
+    
+    local group_resync_at
+    QH_Event("PLAYER_ENTERING_WORLD", function ()
+      GroupResync()
+      group_resync_at = GetTime() + 5
+    end)
+    QH_OnUpdate(function ()
+      if group_resync_at and group_resync_at <= GetTime() then
+        group_resync_at = nil
+        GroupResync()
+      end
+    end, "group_resync")
     
     QH_Event("PLAYER_LEVEL_UP", function ()
       self.player_level = arg1
@@ -1030,15 +1050,14 @@ Thanks for testing!]], "QuestHelper " .. version_string, 500, 20, 10)
     local tc, tx, ty
     
     if nc and nc ~= -1 then -- We just want the raw data here, before we've done anything clever.
-      tc, tx, ty = self.Astrolabe:GetAbsoluteContinentPosition(nc, nz, nx, ny)
-      QuestHelper: Assert(tc and tx and ty)  -- is it true? nobody knows! :D
+      tc, tx, ty = self.Astrolabe:GetAbsoluteContinentPosition(nc, nz, nx, ny)  -- this can come back empty, and everything below copes with that
     end
     
     if nc and nc == self.c and map_shown_decay > 0 and self.z > 0 and self.z ~= nz then
       -- There's a chance Astrolable will return the wrong zone if you're messing with the world map, if you can
       -- be seen in that zone but aren't in it.
       local nnx, nny = self.Astrolabe:TranslateWorldMapPosition(nc, nz, nx, ny, nc, self.z)
-      if nnx > 0 and nny > 0 and nnx < 1 and nny < 1 then
+      if nnx and nny and nnx > 0 and nny > 0 and nnx < 1 and nny < 1 then
         nz, nx, ny = self.z, nnx, nny
       end
     end

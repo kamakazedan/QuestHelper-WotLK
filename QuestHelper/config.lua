@@ -160,7 +160,7 @@ function addon:GenerateOptions()
 							end
 							if QuestHelper_Pref['hide'] then
 								if QuestHelper_Pref['track'] then
-									QusetHelper:HideTracker();
+									QuestHelper:HideTracker();
 								end
 								QuestHelper.map_overlay:Hide();
 							else
@@ -644,6 +644,23 @@ function addon:GenerateOptions()
 									QH_Tracker_Rescan()
 								end,
 							},
+							Zones = {
+								order = 8,
+								type = "toggle",
+								name = L["TrackerZonesName"],
+								desc = L["TrackerZonesDesc"],
+								width = "double",
+								disabled = function()
+									return not QuestHelper_Pref['track'] or QuestHelper_Pref['hide'];
+								end,
+								get = function(i)
+									return QuestHelper_Pref['track_zones'];
+								end,
+								set = function(i, v)
+									QuestHelper_Pref['track_zones'] = v;
+									QH_Tracker_Rescan()
+								end,
+							},
 						},
 					},
 					MapOptions = {
@@ -688,7 +705,7 @@ function addon:GenerateOptions()
 								get = function(i)
 									return QuestHelper_Pref['zones'] == 'next';
 								end,
-								set = function(i)
+								set = function(i, v)
 									QuestHelper_Pref['zones'] = (v and 'next') or 'none';
 								end,
 							},
@@ -759,7 +776,7 @@ function addon:GenerateOptions()
 							if QuestHelper_Pref['share'] and not QuestHelper_Pref['solo'] then
 								QuestHelper:SetShare(true);
 							elseif QuestHelper_Pref['solo'] then
-								QusetHelper:SetShare(false);
+								QuestHelper:SetShare(false);
 							end
 						end,
 					},
@@ -1140,6 +1157,8 @@ l:RegisterData("enUS", {
 	["TrackerQColorDesc"] = "Color quest names in the tracker based on level",
 	["TrackerOColorName"] = "Objective Color",
 	["TrackerOColorDesc"] = "Color quest objectives based on progress",
+	["TrackerZonesName"] = "Zone Headings",
+	["TrackerZonesDesc"] = "Group quests in the tracker under their quest log zone headings",
 	["RouteOptionsName"] = "Route Calculation Options",
 	["RouteOptionsDesc"] = "Options to control route calculation",
 	["RouteIntro"] = "Options to control route calculation",

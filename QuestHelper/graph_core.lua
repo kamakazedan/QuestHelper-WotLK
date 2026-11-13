@@ -21,6 +21,9 @@ local pairs, ipairs = pairs, ipairs
 local sqrt = math.sqrt
 local GetTime = GetTime
 
+-- What we report as the cost of reaching somewhere that can't be reached. Long enough that the route never prefers it.
+local UNREACHABLE_COST = 1000000
+
 local function heap_left(x) return (2*x) end
 local function heap_right(x) return (2*x + 1) end
 
@@ -182,7 +185,8 @@ function QH_Graph_Pathmultifind(st, nda, reverse, make_path)
   local stnode = QuestHelper:CreateTable("graphcore stnode")
   do
     stnode.x, stnode.y, stnode.p, stnode.c, stnode.scan_id, stnode.scan_cost = st.x, st.y, canoplane(st.p), st.c, grid, 0
-    QuestHelper: Assert(plane[canoplane(st.p)])
+    stnode.is_start = true
+    if not plane[stnode.p] then plane[stnode.p] = {} end  -- nothing links to wherever we're standing, so everything will just come back unreachable
     tinsert(plane[stnode.p], stnode)
     
     local hep = QuestHelper:CreateTable("graphcore heap")
@@ -301,14 +305,10 @@ function QH_Graph_Pathmultifind(st, nda, reverse, make_path)
   dijheap = nil
   
   --QuestHelper:TextOut(string.format("Earlyout with %d/%d remaining", #dijheap, remaining))
-  if remaining > 0 then
-    for k, v in ipairs(nda) do
-      if not out[k] then
-        QuestHelper: Assert(false, string.format("Couldn't find path to %d/%f/%f from %d/%f/%f", nda[k].p, nda[k].x, nda[k].y, st.p, st.x, st.y))
-      end
-    end
+  -- Anywhere we couldn't reach just counts as a very long way away. This used to be an assert, which killed routing for the session.
+  for k in ipairs(nda) do
+    if not out[k] then out[k] = UNREACHABLE_COST end
   end
-  QuestHelper: Assert(remaining == 0)
   
   grid = grid + 1
   QuestHelper: Assert(grid < 1000000000) -- if this ever triggers I will be amazed
@@ -324,8 +324,7 @@ function QH_Graph_Pathmultifind(st, nda, reverse, make_path)
       out[k] = rp
       --print(out[k])
       
-      if link[k] then
-        QuestHelper: Assert(link[k].scan_from)
+      if link[k] and link[k].scan_from then
         local tpath = reverse and rp or QuestHelper:CreateTable("graphcore path reversal")
         local cpx = link[k].scan_from
         local mdlast = nil
@@ -357,8 +356,9 @@ function QH_Graph_Pathmultifind(st, nda, reverse, make_path)
   
   QuestHelper:ReleaseTable(table.remove(plane[stnode.p])) -- always added last, so we remove it first
   for k, v in ipairs(nda) do
-    if plane[canoplane(v.p)] and plane[canoplane(v.p)][#plane[canoplane(v.p)]].goal then   -- might not be the exact one, but we'll remove 'em all once we get there anyway :D
-      QuestHelper:ReleaseTable(table.remove(plane[canoplane(v.p)]))
+    local vplane = plane[canoplane(v.p)]
+    if vplane and vplane[#vplane] and vplane[#vplane].goal then   -- might not be the exact one, but we'll remove 'em all once we get there anyway :D
+      QuestHelper:ReleaseTable(table.remove(vplane))
     end
   end
   
@@ -373,6 +373,23 @@ function QH_Graph_Pathmultifind(st, nda, reverse, make_path)
   
   active = false
   return out  -- THIS HAD BETTER BE RELEASABLE OR IT WILL BE BAD
+end
+
+function QH_Graph_Ready()
+  return prepared and not active
+end
+
+-- The routing thread died, possibly in the middle of a search. Take out the temporary nodes that search added and unlock the graph.
+function QH_Graph_Recover()
+  if not active then return end
+  active = false
+  grid = grid + 1
+  
+  for _, nodes in pairs(plane) do
+    while nodes[#nodes] and (nodes[#nodes].goal or nodes[#nodes].is_start) do
+      table.remove(nodes)
+    end
+  end
 end
 
 function QH_Graph_Init()

@@ -16,6 +16,7 @@ local function Tooltipy(self)
   if not ilink then return end
   
   local id = GetItemType(ilink)
+  if not id then return end
   
   if not QHCI[id] then QHCI[id] = {} end
   local item = QHCI[id]

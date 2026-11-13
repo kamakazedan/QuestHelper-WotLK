@@ -91,10 +91,11 @@ local function Looted(message)
   if not item then return end
   
   local item = GetItemType(message, true)
+  if not item then return end
   
   local name, _, quality, ilvl, min, itype, isubtype, _, equiploc, _ = GetItemInfo(item)
 
-  if name and IsEquippableItem(item) and min <= UnitLevel("player") and invloc_lookup[equiploc] then   -- The level comparison may be redundant
+  if name and IsEquippableItem(item) and min <= QuestHelper:PlayerLevel() and invloc_lookup[equiploc] then   -- The level comparison may be redundant
     local competing = {}
     local nonempty = false
     for i, v in pairs(invloc_lookup[equiploc]) do

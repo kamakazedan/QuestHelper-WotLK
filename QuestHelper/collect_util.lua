@@ -2,6 +2,7 @@ QuestHelper_File["collect_util.lua"] = "1.4.1"
 QuestHelper_Loadtime["collect_util.lua"] = GetTime()
 
 local function IsMonsterGUID(guid)
+  if not guid then return false end  -- it's gone already
   QuestHelper: Assert(#guid == 18, "guid len " .. guid) -- 64 bits, plus the 0x prefix
   QuestHelper: Assert(guid:sub(1, 2) == "0x", "guid 0x-prefix " .. guid)
   return guid:sub(5, 5) == "3" or guid:sub(5, 5) == "5"
@@ -26,17 +27,12 @@ local function GetMonsterType(guid)
 end
 
 local function GetItemType(link, vague)
-  return tonumber(string.match(link,
-    (vague and "" or "^") .. "|cff%x%x%x%x%x%x|Hitem:(%d+):[%d:-]+|h%[[^%]]*%]|h|r".. (vague and "" or "$") 
-  ))
+  if not link then return nil end
+  return tonumber(string.match(link, "|Hitem:(%d+):"))  -- not anchored to the name, which can contain brackets of its own
 end
   
 local function GetQuestType(link)
-  return tonumber(string.match(link,
-    "^|cff%x%x%x%x%x%x|Hquest:(%d+):[%d-]+|h%[[^%]]*%]|h|r$"
-  )), tonumber(string.match(link,
-    "^|cff%x%x%x%x%x%x|Hquest:%d+:([%d-]+)|h%[[^%]]*%]|h|r$"
-  ))
+  return tonumber(string.match(link, "|Hquest:(%d+):[%d-]+|h")), tonumber(string.match(link, "|Hquest:%d+:([%d-]+)|h"))
 end
 
 function QH_Collect_Util_Init(_, API)
