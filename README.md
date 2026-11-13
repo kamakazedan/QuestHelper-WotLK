@@ -15,6 +15,7 @@ QuestHelper 1.4.1 (Warperia build) for World of Warcraft 3.3.5a, with bug fixes 
 - The tracker groups quests under their quest log locations (Stormwind City, The Stockade and so on), and each heading has a show/hide button like the built-in tracker's. A minimised section keeps its heading only when something in it would have been listed.
 - Right-clicking a quest in the tracker opens a menu in the game's own style: open the quest, track or stop tracking it, show it on the map, change its priority or ignore it. QuestHelper's map menus use the same style.
 - The QuestHelper button on the world map sits beside Zoom Out, away from the corner where other map addons put their controls.
+- The route's dots on the world map are twice as close together, and green on the way to the objective QuestHelper is taking you to, through any flight masters or portals on the way.
 - Quests a party member has that you don't are listed under "*Name*'s quests".
 - Settings that raised errors or didn't take effect when changed are fixed.
 

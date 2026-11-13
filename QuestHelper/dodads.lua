@@ -90,6 +90,12 @@ end
 local poi = {}
 local poi_changed = false
 
+-- The route's dots: twice as close together as 1.4.1 drew them, and green on the way to the objective you are being
+-- taken to (through any flight masters, portals or zone borders on the way), the faint black of 1.4.1 after it.
+local DOT_SPACING = .0125
+local DOT_NEXT = { 0.25, 1, 0.25, 0.8 }
+local DOT_LATER = { 0, 0, 0, 0.35 }
+
 local poi_dodads = {}
 
 function QH_POI_Reset()
@@ -153,12 +159,13 @@ function QuestHelper:CreateWorldMapWalker()
         local new_x, new_y = unpack(pos)
         local x1, y1, x2, y2 = ClampLine(last_x, last_y, new_x, new_y)
         last_x, last_y = new_x, new_y
+        local next_leg = i <= (self.next_leg or 0)
         
         if x1 then
           local len = math.sqrt((x1-x2)*(x1-x2)*16/9+(y1-y2)*(y1-y2))
           
           if len > 0.0001 then
-            local interval = .025/len
+            local interval = DOT_SPACING/len
             local p = remainder*interval
             
             while p < 1 do
@@ -168,6 +175,12 @@ function QuestHelper:CreateWorldMapWalker()
                 dot = QuestHelper:CreateDotTexture(self)
                 dot:SetDrawLayer("BACKGROUND")
                 self.dots[out] = dot
+              end
+              
+              -- coloured only when it changes, so a map addon that restyles the dots sees each change once
+              if dot.on_next_leg ~= next_leg then
+                dot.on_next_leg = next_leg
+                dot:SetVertexColor(unpack(next_leg and DOT_NEXT or DOT_LATER))
               end
               
               dot:ClearAllPoints()
@@ -207,6 +220,16 @@ function QuestHelper:CreateWorldMapWalker()
       while #points > 0 do self.frame:ReleaseTable(table.remove(points)) end
       
       local c, z = QuestHelper.Astrolabe:GetCurrentVirtualMapCZ()
+      
+      -- how many of the stretches between the points lead to the next objective: the waypoints on the way (the ignored
+      -- points) and the stretch to the objective itself
+      self.next_leg = 0
+      for i = 2, #self.route do
+        if not self.route[i].ignore then
+          self.next_leg = i - 1
+          break
+        end
+      end
       
       for i, obj in ipairs(self.route) do
         --QuestHelper:TextOut(string.format("%s", tostring(obj)))
