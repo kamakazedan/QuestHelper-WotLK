@@ -17,6 +17,7 @@ QuestHelper 1.4.1 (Warperia build) for World of Warcraft 3.3.5a, with bug fixes 
 - The QuestHelper button on the world map sits beside Zoom Out, away from the corner where other map addons put their controls.
 - The route's dots on the world map are twice as close together, and green on the way to the objective QuestHelper is taking you to, through any flight masters or portals on the way.
 - Quests a party member has that you don't are listed under "*Name*'s quests".
+- Creatures are identified correctly on 3.3.5, so a party member's quests no longer show on unrelated creatures' tooltips, and bad database entries no longer add route points and map icons in the wrong places.
 - Settings that raised errors or didn't take effect when changed are fixed.
 
 The first commit is the original 1.4.1, so the history shows every change.

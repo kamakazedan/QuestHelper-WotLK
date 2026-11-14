@@ -31,6 +31,29 @@ local function copy_without_last(tab)
   return tt
 end
 
+-- QuestHelper's own data collectors read creature IDs from the wrong part of the GUID on 3.3 clients (see GetMonsterType in tooltip.lua),
+-- recording each creature as its ID divided by 256. The database has those beside the real IDs, so a creature below 256 listed
+-- next to another from its block of 256 is most likely one of them.
+local function SuspectCreatureIDs(source)
+  local blocks, suspect
+  for _, v in ipairs(source) do
+    local id = v.sourcetype == "monster" and tonumber(v.sourceid)
+    if id and id >= 256 then
+      blocks = blocks or {}
+      blocks[math.floor(id / 256)] = true
+    end
+  end
+  if not blocks then return nil end
+  for _, v in ipairs(source) do
+    local id = v.sourcetype == "monster" and tonumber(v.sourceid)
+    if id and id < 256 and blocks[id] then
+      suspect = suspect or {}
+      suspect[v] = true
+    end
+  end
+  return suspect
+end
+
 local function AppendObjlinks(target, source, tooltips, icon, last_name, map_lines, tooltip_lines, seen)
   if not seen then seen = {} end
   if not map_lines then map_lines = {} end
@@ -52,7 +75,22 @@ local function AppendObjlinks(target, source, tooltips, icon, last_name, map_lin
     target = nil  -- if we have a "source" as well, then we want to plow through it for tooltip data, but we don't want to add targets for it
   end
   
-  for _, v in ipairs(source) do
+  -- A suspect creature's positions are wherever any creature of its block was seen, often a capital city, so it gives no route
+  -- points as long as the real sources give some. It still gives tooltips: a few low IDs are real creatures that share a block.
+  local suspect = target and SuspectCreatureIDs(source)
+  local order, before, real_gave = source, target and #target, nil
+  if suspect then
+    order = {}
+    for _, v in ipairs(source) do if not suspect[v] then table.insert(order, v) end end
+    for _, v in ipairs(source) do if suspect[v] then table.insert(order, v) end end
+  end
+  
+  for _, v in ipairs(order) do
+    local into = target
+    if suspect and suspect[v] then
+      if real_gave == nil then real_gave = #target > before end
+      if real_gave then into = nil end
+    end
     local dbgi = DB_GetItem(v.sourcetype, v.sourceid, true, true)
     
     if dbgi then  -- the database can point at things it doesn't contain
@@ -80,7 +118,7 @@ local function AppendObjlinks(target, source, tooltips, icon, last_name, map_lin
       
       tooltips[string.format("%s@@%s", v.sourcetype, v.sourceid)] = copy_without_last(tooltip_lines)
       
-      AppendObjlinks(target, dbgi, tooltips, icon or licon, source.name, map_lines, tooltip_lines, seen)
+      AppendObjlinks(into, dbgi, tooltips, icon or licon, source.name, map_lines, tooltip_lines, seen)
       table.remove(tooltip_lines, 1)
       table.remove(map_lines)
       
