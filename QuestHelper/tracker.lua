@@ -432,8 +432,9 @@ local specitem_max = 1
 local specitem_unused = {}
 
 -- This is adding a *single item*. This won't be called by the main parsing loop, but it does need some serious hackery. Let's see now
--- A quest's line has two buttons before its title, as Questie's tracker has: its priority button (a quest giver's
--- "?", gold once it's complete, glowing while it's the top priority) and the button that shows or hides its objectives.
+-- A quest's line has two buttons before its title, as Questie's tracker has: its priority button (a white ?, gold at
+-- High or while QuestHelper's taking you to the quest, a red ! at Highest) and the button that shows or hides its
+-- objectives.
 local QUEST_ICON = 12
 local QUEST_TEXT_X = 4 + 2 * (QUEST_ICON + 2)
 local QUEST_OBJECTIVE_X = QUEST_TEXT_X + 10
@@ -467,6 +468,9 @@ end
 local function PriorityName(pri)
   return QHText("PRIORITY" .. tostring(math.max(1, math.min(5, (pri or 0) + 3))))
 end
+
+-- The route as last worked out. Its first objective after where you are is the one QuestHelper's taking you to.
+local route = {}
 
 -- The priority button. A click makes a quest High and a double-click Highest. Clicked while it's up there, it puts back
 -- what it had before (Normal, if it got up there some other way, from a menu say); what it had is kept from one
@@ -567,6 +571,32 @@ local function PriorityClicked(quest)
   last_click[id] = {time = GetTime(), before = back}
 end
 
+-- Whether QuestHelper's taking you to this quest now: its next objective is one of this quest's.
+local function Navigating(quest)
+  local nxt = route[2]
+  return nxt ~= nil and nxt.why == quest
+end
+
+-- The priority button's picture: a red ! at Highest, a gold ? at High or while QuestHelper's taking you to the quest,
+-- and a white ? otherwise.
+local function ShowPriorityIcon(prio, quest)
+  local level = ShownLevel(quest)
+  if level == -2 then
+    prio:SetNormalTexture("Interface\\GossipFrame\\AvailableQuestIcon")
+  else
+    prio:SetNormalTexture("Interface\\GossipFrame\\ActiveQuestIcon")
+  end
+  local tex = prio:GetNormalTexture()
+  if not tex then return end
+  if level == -2 then
+    tex:SetDesaturated(true)  -- grey first, so the tint comes out a proper red
+    tex:SetVertexColor(1, 0.15, 0.15)
+  else
+    tex:SetDesaturated(not (level == -1 or Navigating(quest)))
+    tex:SetVertexColor(1, 1, 1)
+  end
+end
+
 local function RefreshTooltip(self)
   if GameTooltip:IsOwned(self) and self:GetScript("OnEnter") then self:GetScript("OnEnter")(self) end
 end
@@ -610,6 +640,7 @@ local function QuestButtonEnter(self)
       GameTooltip:SetText(QHText("PRIORITY") .. ": " .. PriorityName(#clusters > 0 and CurrentPriority(quest, clusters) or 0))
       GameTooltip:AddLine(string.format("Click to make it %s, or double-click to make it %s.", PriorityName(-1), PriorityName(-2)), 1, 1, 1, true)
     end
+    if Navigating(quest) then GameTooltip:AddLine("QuestHelper is taking you to this quest now.", .82, .82, .82, true) end
   else
     GameTooltip:SetText(QuestCollapsed(self.quest) and "Show objectives" or "Hide objectives")
   end
@@ -656,25 +687,9 @@ local function ShowQuestButtons(item, quest, listed)
   if listed then collapse:Show() else collapse:Hide() end  -- hidden, it still holds the priority button in line
   
   local prio = QuestButton(item, "qh_priority", "priority")
-  if not prio.glow then
-    prio.glow = prio:CreateTexture(nil, "OVERLAY")
-    prio.glow:SetTexture("Interface\\Buttons\\CheckButtonHilight")
-    prio.glow:SetBlendMode("ADD")
-    prio.glow:SetPoint("TOPLEFT", prio, "TOPLEFT", 0, 0)  -- the icon's own square: it scales with it, and stays clear of the lines above and below
-    prio.glow:SetPoint("BOTTOMRIGHT", prio, "BOTTOMRIGHT", 0, 0)
-  end
   prio:ClearAllPoints()
   prio:SetPoint("RIGHT", collapse, "LEFT", -2, 0)
-  prio:SetNormalTexture("Interface\\GossipFrame\\ActiveQuestIcon")
-  local tex = prio:GetNormalTexture()
-  if tex then tex:SetDesaturated(not quest.qh_complete) end
-  local level = ShownLevel(quest)
-  if level then
-    prio.glow:SetAlpha(level == -2 and 1 or 0.5)  -- bright at Highest, faint at High
-    prio.glow:Show()
-  else
-    prio.glow:Hide()
-  end
+  ShowPriorityIcon(prio, quest)
   prio.quest = quest
   prio:Show()
 end
@@ -929,7 +944,6 @@ local recalculating_start = nil
 local hidden_vquest1 = { tracker_desc = QHText("QUESTS_HIDDEN_1"), tracker_clicked = QH_Hidden_Menu }
 local hidden_vquest2 = { tracker_desc = "    " .. QHText("QUESTS_HIDDEN_2"), tracker_clicked = QH_Hidden_Menu }
 
-local route = {}
 local pinned = {}
 
 -- Watched quests aren't in route order, so they follow the quest log.
