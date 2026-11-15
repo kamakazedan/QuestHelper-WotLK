@@ -117,6 +117,50 @@ end
 
 local walker_loc
 
+-- How far a map addon has zoomed the world map in, and the part of the map in view (from 0 to 1 across and down).
+-- Zooming map addons (BetterMaps, Magnify and the like) put WorldMapDetailFrame in a scroll frame and scale it up
+-- in there; with the game's own map nothing is zoomed and all of it is in view.
+local function MapView()
+  local overlay = QuestHelper.map_overlay
+  local view = WorldMapDetailFrame and WorldMapDetailFrame:GetParent()
+  if not (view and view.GetObjectType and view:GetObjectType() == "ScrollFrame") then return 1, 0, 0, 1, 1 end
+  local oscale, vscale = overlay:GetEffectiveScale(), view:GetEffectiveScale()
+  local ol, ot, ow, oh = overlay:GetLeft(), overlay:GetTop(), overlay:GetWidth(), overlay:GetHeight()
+  local vl, vt, vw, vh = view:GetLeft(), view:GetTop(), view:GetWidth(), view:GetHeight()
+  if not (oscale and vscale and ol and ot and ow and oh and vl and vt and vw and vh) or oscale <= 0 or vscale <= 0 or ow <= 0 or oh <= 0 then
+    return 1, 0, 0, 1, 1
+  end
+  ow, oh = ow * oscale, oh * oscale
+  local left, top = (vl * vscale - ol * oscale) / ow, (ot * oscale - vt * vscale) / oh
+  return math.max(oscale / vscale, 1), left, top, left + vw * vscale / ow, top + vh * vscale / oh
+end
+
+-- one edge of a rectangle cutting down how far along a line is inside it (Liang-Barsky)
+local function ClipToEdge(p, q, t0, t1)
+  if p == 0 then
+    if q < 0 then return end
+  elseif p < 0 then
+    local r = q / p
+    if r > t1 then return end
+    if r > t0 then t0 = r end
+  else
+    local r = q / p
+    if r < t0 then return end
+    if r < t1 then t1 = r end
+  end
+  return t0, t1
+end
+
+-- the part of the line from (x1, y1) to (x2, y2) inside a rectangle, as how far along the line it starts and ends
+local function LineInView(x1, y1, x2, y2, left, top, right, bottom)
+  local dx, dy = x2 - x1, y2 - y1
+  local t0, t1 = ClipToEdge(-dx, x1 - left, 0, 1)
+  if t0 then t0, t1 = ClipToEdge(dx, right - x1, t0, t1) end
+  if t0 then t0, t1 = ClipToEdge(-dy, y1 - top, t0, t1) end
+  if t0 then t0, t1 = ClipToEdge(dy, bottom - y1, t0, t1) end
+  return t0, t1
+end
+
 function QuestHelper:CreateWorldMapWalker()
   if not self.Astrolabe or not QuestHelper then return end
   QuestHelper: Assert(self == QuestHelper)
@@ -155,6 +199,12 @@ function QuestHelper:CreateWorldMapWalker()
       local last_x, last_y = self.frame.Astrolabe:TranslateWorldMapPosition(self.frame.c, self.frame.z, self.frame.x, self.frame.y, c, z)
       local remainder = self.phase
       
+      -- On a map a map addon has zoomed in on, the dots are as far apart on screen as on the whole map, and only the
+      -- part in view gets any (a dot's width round it, so none goes missing at its edge).
+      local zoom, view_l, view_t, view_r, view_b = MapView()
+      local spacing = DOT_SPACING / zoom
+      view_l, view_t, view_r, view_b = view_l - spacing, view_t - spacing, view_r + spacing, view_b + spacing
+      
       for i, pos in ipairs(points) do
         local new_x, new_y = unpack(pos)
         local x1, y1, x2, y2 = ClampLine(last_x, last_y, new_x, new_y)
@@ -165,16 +215,25 @@ function QuestHelper:CreateWorldMapWalker()
           local len = math.sqrt((x1-x2)*(x1-x2)*16/9+(y1-y2)*(y1-y2))
           
           if len > 0.0001 then
-            local interval = DOT_SPACING/len
-            local p = remainder*interval
+            local interval = spacing/len
+            local start = remainder*interval
+            local p, last = start, -1
+            local first, upto = LineInView(x1, y1, x2, y2, view_l, view_t, view_r, view_b)
+            if first then
+              last = upto
+              -- counted from the start of the line, so the dots don't slide along it as the view moves
+              if p < first then p = p + math.ceil((first - p)/interval)*interval end
+            end
             
-            while p < 1 do
+            while p < 1 and p <= last do
               out = out + 1
               local dot = self.dots[out]
               if not dot then
                 dot = QuestHelper:CreateDotTexture(self)
                 dot:SetDrawLayer("BACKGROUND")
                 self.dots[out] = dot
+              elseif not dot:IsShown() then
+                dot:Show()
               end
               
               -- coloured only when it changes, so a map addon that restyles the dots sees each change once
@@ -189,14 +248,18 @@ function QuestHelper:CreateWorldMapWalker()
               p = p + interval
             end
             
-            remainder = (p-1)/interval
+            -- the next line carries on from where this one's dots would have ended, whatever part of it was in view
+            remainder = (start + math.max(math.ceil((1 - start)/interval), 0)*interval - 1)/interval
           end
         end
       end
     end
     
-    while #self.dots > out do
-      QuestHelper:ReleaseTexture(table.remove(self.dots))
+    -- dots not needed now are hidden, not given back: they are wanted again as the route or the view moves, and a map
+    -- addon that restyles the dots keeps its style on them
+    for i = out + 1, #self.dots do
+      local dot = self.dots[i]
+      if dot:IsShown() then dot:Hide() end
     end
   end
   
