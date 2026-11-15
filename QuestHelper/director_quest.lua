@@ -382,13 +382,24 @@ local function MakeQuestObjectiveTitle(progress, target)
     shown = only
   end
   
+  -- Done ourselves, but not by everyone: what's left to do is theirs, so it's their numbers that say what it is (the
+  -- party's count does, if there's more than one of them).
+  local shown_for
+  if progress[player] and progress[player][3] == 1 and pd < pt then
+    local left = 0
+    for name, v in pairs(progress) do
+      if v[3] ~= 1 then left, shown, shown_for = left + 1, v, name end
+    end
+    if left > 1 then shown, shown_for = nil, nil end
+  end
+  
   if shown then
     local have, need = tonumber(shown[1]), tonumber(shown[2])
     
     ccode = difficulty_color(shown[3])
     
     if have and need then
-      if need > 1 then
+      if need > 1 or shown_for then
         status = string.format("%d/%d", have, need)
         party_compact = true
       end
@@ -397,7 +408,11 @@ local function MakeQuestObjectiveTitle(progress, target)
       party_compact = true
     end
     
-    if pt > 1 then party_show = true end
+    if shown_for then
+      party = "(" .. shown_for .. ")"
+    elseif pt > 1 then
+      party_show = true
+    end
   elseif pt == 0 then
     ccode = difficulty_color(1) -- probably just in the process of being removed from the tracker
     status = "Complete"
@@ -805,6 +820,10 @@ function QuestProcessor(user_id, db, title, level, group, variety, groupsize, wa
           if turnin then QH_Route_ClusterRequires(turnin, db[i]) end
         end
         if watched ~= "(ignore)" then QH_Tracker_SetPin(db[i][1], watched, true) end
+      elseif InsertedItems[db[i]] then
+        -- done for this one, but someone else still needs it: its line has to know who's done
+        local desc = MakeQuestObjectiveTitle(db[i].progress, db[i].target)
+        for _, v in ipairs(db[i]) do v.tracker_desc = desc or "(no description available)" end
       end
       
       db[i].temp_desc, db[i].temp_typ, db[i].temp_done = nil, nil, nil

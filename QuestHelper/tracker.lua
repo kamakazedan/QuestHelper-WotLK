@@ -468,80 +468,147 @@ local function PriorityName(pri)
   return QHText("PRIORITY" .. tostring(math.max(1, math.min(5, (pri or 0) + 3))))
 end
 
--- The priority button: the quest goes to the top of the route, and the second click puts back what it was before.
--- What it was is kept from one session to the next.
-local function AllHighest(clusters)
-  if #clusters == 0 then return false end
+-- The priority button. A click makes a quest High and a double-click Highest. Clicked while it's up there, it puts back
+-- what it had before (Normal, if it got up there some other way, from a menu say); what it had is kept from one
+-- session to the next.
+local DOUBLE_CLICK = 0.5
+
+-- How far up a quest is: Highest (-2) when every part of it still to do is at Highest, High (-1) when they're all at
+-- least High, nil otherwise.
+local function RaisedLevel(clusters)
+  if #clusters == 0 then return nil end
+  local level = -2
   for _, c in ipairs(clusters) do
-    if QH_Route_GetClusterPriority(c) ~= -2 then return false end
+    local pri = QH_Route_GetClusterPriority(c)
+    if not pri or pri > -1 then return nil end
+    if pri > level then level = pri end
   end
-  return true
+  return level
 end
 
--- On top: made so by the button, or every part of it still to do set to Highest some other way.
-local function QuestOnTop(quest)
-  return QH_Quest_PriorityBefore(quest.type_quest.id) ~= nil or AllHighest(QuestClusters(quest))
-end
+-- The route takes a moment to apply a priority, so what a click asked for is what's shown until it has, or for a few
+-- seconds.
+local pressed = {}
+local last_click = {}  -- when each quest's button was last clicked, and what a double-click then leaves to be put back
 
--- The route takes priorities a moment to apply, so what a press asked for is shown until it has, or for a few seconds.
-local pressed_top = {}
-
-local function ShownOnTop(quest)
+local function ShownLevel(quest)
   local id = quest.type_quest.id
-  local on = QuestOnTop(quest)
-  local asked = pressed_top[id]
+  local level = RaisedLevel(QuestClusters(quest))
+  local asked = pressed[id]
   if asked then
-    if asked.on == on or GetTime() > asked.till then pressed_top[id] = nil else on = asked.on end
+    if asked.level == level or GetTime() > asked.till then pressed[id] = nil else level = asked.level end
   end
-  return on
+  return level
+end
+
+-- the turn-in's priority, or what a click is still waiting to see it become
+local function CurrentPriority(quest, clusters)
+  local asked = pressed[quest.type_quest.id]
+  if asked and GetTime() <= asked.till then return asked.pri end
+  return (clusters[1] and QH_Route_GetClusterPriority(clusters[1])) or 0
+end
+
+-- What a click puts back on a quest that's up at level: what it had before the button put it there, if that's any
+-- lower, and Normal if not.
+local function PutBack(quest, level)
+  local before = QH_Quest_PriorityBefore(quest.type_quest.id)
+  if type(before) ~= "number" or before <= level then return 0 end
+  return before
 end
 
 function QH_Tracker_RescanSoon()
   QH_AddNotifier(GetTime() + 0.5, function () QH_Tracker_Rescan() end)  -- once the route has the new priorities
+  QH_AddNotifier(GetTime() + 3.5, function () QH_Tracker_Rescan() end)  -- and once what a click asked for stops being shown anyway
 end
 
-local function ToggleTopPriority(quest)
+-- A priority picked from a menu takes over from anything a click was still waiting to see.
+function QH_Tracker_PriorityChosen(questid)
+  if questid then pressed[questid], last_click[questid] = nil, nil end
+end
+
+local function SetQuestPriority(quest, clusters, pri, before)
   local id = quest.type_quest.id
-  local clusters = QuestClusters(quest)
-  local before = QH_Quest_PriorityBefore(id)
-  if ShownOnTop(quest) then
-    QH_Quest_SetPriorityBefore(id, nil)
-    for _, c in ipairs(clusters) do QH_Route_SetClusterPriority(c, before or 0) end  -- Normal if it got to Highest some other way
-    pressed_top[id] = {on = false, till = GetTime() + 3}
-  else
-    QH_Quest_SetPriorityBefore(id, (clusters[1] and QH_Route_GetClusterPriority(clusters[1])) or 0)  -- the turn-in's, which comes first
-    for _, c in ipairs(clusters) do QH_Route_SetClusterPriority(c, -2) end
-    pressed_top[id] = {on = true, till = GetTime() + 3}
-  end
+  QH_Quest_SetPriorityBefore(id, before)
+  for _, c in ipairs(clusters) do QH_Route_SetClusterPriority(c, pri) end
+  pressed[id] = {level = (pri <= -1) and pri or nil, pri = pri, till = GetTime() + 3}
   QH_Tracker_Rescan()
   QH_Tracker_RescanSoon()
+end
+
+-- The second click of a double-click: Highest, and what the first click would have put back is what gets put back later.
+local function PriorityDoubleClicked(quest)
+  local id = quest.type_quest.id
+  local last = last_click[id]
+  last_click[id] = nil
+  if not last or GetTime() - last.time > 2 * DOUBLE_CLICK then return end  -- seen to already, as a second click
+  local clusters = QuestClusters(quest)
+  if #clusters > 0 then SetQuestPriority(quest, clusters, -2, last.before) end
+end
+
+local function PriorityClicked(quest)
+  local id = quest.type_quest.id
+  local last = last_click[id]
+  if last and GetTime() - last.time <= DOUBLE_CLICK then
+    PriorityDoubleClicked(quest)  -- quick enough for a double-click, even if the game didn't call it one
+    return
+  end
+  local clusters = QuestClusters(quest)
+  if #clusters == 0 then return end
+  local level = ShownLevel(quest)
+  local back
+  if level then
+    back = PutBack(quest, level)
+    SetQuestPriority(quest, clusters, back, nil)
+  else
+    back = CurrentPriority(quest, clusters)
+    if back <= -1 then back = 0 end  -- High or Highest isn't anything to go back to
+    SetQuestPriority(quest, clusters, -1, back)
+  end
+  last_click[id] = {time = GetTime(), before = back}
+end
+
+local function RefreshTooltip(self)
+  if GameTooltip:IsOwned(self) and self:GetScript("OnEnter") then self:GetScript("OnEnter")(self) end
 end
 
 local function QuestButtonClicked(self)
   if not self.quest then return end
   if self.qh_kind == "priority" then
-    ToggleTopPriority(self.quest)
+    PriorityClicked(self.quest)
   else
     local set = CollapsedQuests(true)
     local id = self.quest.type_quest.id
     set[id] = (not set[id]) or nil
     QH_Tracker_Rescan()
   end
-  if GameTooltip:IsOwned(self) and self:GetScript("OnEnter") then self:GetScript("OnEnter")(self) end
+  RefreshTooltip(self)
+end
+
+-- What the game calls the second click of a double-click, instead of a click.
+local function QuestButtonDoubleClicked(self)
+  if not self.quest then return end
+  PriorityDoubleClicked(self.quest)
+  RefreshTooltip(self)
 end
 
 local function QuestButtonEnter(self)
   if not self.quest then return end
   GameTooltip:SetOwner(self, "ANCHOR_LEFT")
   if self.qh_kind == "priority" then
-    local before = QH_Quest_PriorityBefore(self.quest.type_quest.id)
-    if ShownOnTop(self.quest) then
-      GameTooltip:SetText(QHText("PRIORITY") .. ": " .. PriorityName(-2))
-      GameTooltip:AddLine(string.format("Click to put it back to %s.", PriorityName(before or 0)), 1, 1, 1, true)
+    local quest = self.quest
+    local level = ShownLevel(quest)
+    if level then
+      GameTooltip:SetText(QHText("PRIORITY") .. ": " .. PriorityName(level))
+      local back = PriorityName(PutBack(quest, level))
+      if level == -2 then
+        GameTooltip:AddLine(string.format("Click to put it back to %s.", back), 1, 1, 1, true)
+      else
+        GameTooltip:AddLine(string.format("Click to put it back to %s, or double-click to make it %s.", back, PriorityName(-2)), 1, 1, 1, true)
+      end
     else
-      local clusters = QuestClusters(self.quest)
-      GameTooltip:SetText(QHText("PRIORITY") .. ": " .. PriorityName(clusters[1] and QH_Route_GetClusterPriority(clusters[1])))
-      GameTooltip:AddLine("Click to make it QuestHelper's top priority, and again to put it back.", 1, 1, 1, true)
+      local clusters = QuestClusters(quest)
+      GameTooltip:SetText(QHText("PRIORITY") .. ": " .. PriorityName(#clusters > 0 and CurrentPriority(quest, clusters) or 0))
+      GameTooltip:AddLine(string.format("Click to make it %s, or double-click to make it %s.", PriorityName(-1), PriorityName(-2)), 1, 1, 1, true)
     end
   else
     GameTooltip:SetText(QuestCollapsed(self.quest) and "Show objectives" or "Hide objectives")
@@ -561,6 +628,7 @@ local function QuestButton(item, key, kind)
     b:SetHeight(QUEST_ICON)
     b.qh_kind = kind
     QH_Hook(b, "OnClick", QuestButtonClicked)
+    if kind == "priority" then QH_Hook(b, "OnDoubleClick", QuestButtonDoubleClicked) end
     QH_Hook(b, "OnEnter", QuestButtonEnter)
     QH_Hook(b, "OnLeave", QuestButtonLeave)
     item[key] = b
@@ -568,8 +636,9 @@ local function QuestButton(item, key, kind)
   return b
 end
 
--- the buttons on a quest's line; any other line (a frame may have been a quest's line before) has none
-local function ShowQuestButtons(item, quest)
+-- The buttons on a quest's line; any other line (a frame may have been a quest's line before) has none. The one that
+-- shows or hides its objectives is only there when it has some listed.
+local function ShowQuestButtons(item, quest, listed)
   if not quest then
     if item.qh_collapse then item.qh_collapse:Hide() end
     if item.qh_priority then item.qh_priority:Hide() end
@@ -584,27 +653,33 @@ local function ShowQuestButtons(item, quest)
   collapse:SetPushedTexture(collapsed and "Interface\\Buttons\\UI-PlusButton-Down" or "Interface\\Buttons\\UI-MinusButton-Down")
   collapse:SetHighlightTexture("Interface\\Buttons\\UI-PlusButton-Hilight", "ADD")
   collapse.quest = quest
-  collapse:Show()
+  if listed then collapse:Show() else collapse:Hide() end  -- hidden, it still holds the priority button in line
   
   local prio = QuestButton(item, "qh_priority", "priority")
   if not prio.glow then
-    prio.glow = prio:CreateTexture(nil, "BACKGROUND")
+    prio.glow = prio:CreateTexture(nil, "OVERLAY")
     prio.glow:SetTexture("Interface\\Buttons\\CheckButtonHilight")
     prio.glow:SetBlendMode("ADD")
-    prio.glow:SetPoint("TOPLEFT", prio, "TOPLEFT", -2, 2)  -- just round the icon, so it scales with it
-    prio.glow:SetPoint("BOTTOMRIGHT", prio, "BOTTOMRIGHT", 2, -2)
+    prio.glow:SetPoint("TOPLEFT", prio, "TOPLEFT", 0, 0)  -- the icon's own square: it scales with it, and stays clear of the lines above and below
+    prio.glow:SetPoint("BOTTOMRIGHT", prio, "BOTTOMRIGHT", 0, 0)
   end
   prio:ClearAllPoints()
   prio:SetPoint("RIGHT", collapse, "LEFT", -2, 0)
   prio:SetNormalTexture("Interface\\GossipFrame\\ActiveQuestIcon")
   local tex = prio:GetNormalTexture()
   if tex then tex:SetDesaturated(not quest.qh_complete) end
-  if ShownOnTop(quest) then prio.glow:Show() else prio.glow:Hide() end
+  local level = ShownLevel(quest)
+  if level then
+    prio.glow:SetAlpha(level == -2 and 1 or 0.5)  -- bright at Highest, faint at High
+    prio.glow:Show()
+  else
+    prio.glow:Hide()
+  end
   prio.quest = quest
   prio:Show()
 end
 
-local function addItem(objective, y, meta, indent)
+local function addItem(objective, y, meta, indent, listed)
   local obj_key = objective
   if obj_key.cluster then obj_key = obj_key.cluster end
   used_count[obj_key] = (used_count[obj_key] or 0) + 1
@@ -655,7 +730,7 @@ local function addItem(objective, y, meta, indent)
     end
   end
   
-  ShowQuestButtons(item, (meta == true and IsQuestRow(objective)) and objective or nil)
+  ShowQuestButtons(item, (meta == true and IsQuestRow(objective)) and objective or nil, listed)
   
   if item.ex ~= x or item.ey ~= y then
     item.sx, item.sy, item.ex, item.ey = item.x, item.y, x, y
@@ -713,7 +788,7 @@ local function addMetaObjective(metaobj, items, y, depth)
   
   local quest = IsQuestRow(metaobj)
   local x, spacer
-  x, y, spacer = addItem(metaobj, y, true, quest and QUEST_TEXT_X or nil)
+  x, y, spacer = addItem(metaobj, y, true, quest and QUEST_TEXT_X or nil, #items > 0)
   if QuestCollapsed(metaobj) then  -- its objectives hidden, from its button
     QuestHelper:ReleaseTable(seen_texts)
     return math.max(y, spacer), depth + 1
@@ -890,6 +965,16 @@ function QH_Tracker_Rescan()
         if not k.ignore and not k.tracker_hidden then table.insert(objs[k.why], k) end
       end
       obj_done[k.cluster] = true 
+    end
+    
+    -- What a party member still needs of a quest we're tracking is listed under it, not under a second copy of it
+    -- further down.
+    for _, v in ipairs(route) do
+      local list = v.why and objs[v.why]
+      if list and v.cluster and not obj_done[v.cluster] and not v.ignore and not v.tracker_hidden then
+        table.insert(list, v)
+        obj_done[v.cluster] = true
+      end
     end
     
     local sort_objs = QuestHelper:CreateTable("tracker sobjs")
