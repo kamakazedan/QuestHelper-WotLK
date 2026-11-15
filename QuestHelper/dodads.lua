@@ -161,6 +161,111 @@ local function LineInView(x1, y1, x2, y2, left, top, right, bottom)
   return t0, t1
 end
 
+-- Objective areas: outlines this thick on screen (in the map's own units when it isn't zoomed), rounded off at least
+-- once and until they have about this many corners.
+local AREA_LINE = 2
+local AREA_POINTS = 256
+
+-- An area's outline with its corners rounded off (Chaikin's corner cutting: each pass cuts every corner down to two,
+-- a quarter of the way along each side), repeated points dropped first.
+local function SmoothOutline(xs, ys)
+  local px, py = {}, {}
+  for i = 1, #xs do
+    local j = #px
+    if j == 0 or math.abs(xs[i] - px[j]) > 1e-9 or math.abs(ys[i] - py[j]) > 1e-9 then
+      px[j + 1], py[j + 1] = xs[i], ys[i]
+    end
+  end
+  while #px > 1 and math.abs(px[#px] - px[1]) <= 1e-9 and math.abs(py[#py] - py[1]) <= 1e-9 do
+    px[#px], py[#py] = nil, nil
+  end
+  if #px < 3 then return px, py end
+  local passes = 0
+  while passes < 3 and (passes == 0 or #px * 2 <= AREA_POINTS) do
+    local nx, ny, n = {}, {}, #px
+    for i = 1, n do
+      local j = i % n + 1
+      nx[2 * i - 1], ny[2 * i - 1] = px[i] * 0.75 + px[j] * 0.25, py[i] * 0.75 + py[j] * 0.25
+      nx[2 * i], ny[2 * i] = px[i] * 0.25 + px[j] * 0.75, py[i] * 0.25 + py[j] * 0.75
+    end
+    px, py, passes = nx, ny, passes + 1
+  end
+  return px, py
+end
+
+local function InTriangle(px, py, ax, ay, bx, by, cx, cy)  -- edges count as in
+  local d1 = (px - bx) * (ay - by) - (ax - bx) * (py - by)
+  local d2 = (px - cx) * (by - cy) - (bx - cx) * (py - cy)
+  local d3 = (px - ax) * (cy - ay) - (cx - ax) * (py - ay)
+  return not ((d1 < 0 or d2 < 0 or d3 < 0) and (d1 > 0 or d2 > 0 or d3 > 0))
+end
+
+-- Triangles covering an outline, as indexes into it three at a time: a fan if it's convex, else ears cut off one at
+-- a time. Nil if it can't be done (an outline that crosses itself).
+local function TriangulateOutline(xs, ys)
+  local n = #xs
+  if n < 3 then return end
+  local area = 0
+  for i = 1, n do
+    local j = i % n + 1
+    area = area + xs[i] * ys[j] - xs[j] * ys[i]
+  end
+  if math.abs(area) < 1e-12 then return end
+  local sign = area > 0 and 1 or -1
+  local function turn(a, b, c)  -- above 0 where a, b, c turn the way the outline goes round
+    return ((xs[b] - xs[a]) * (ys[c] - ys[b]) - (ys[b] - ys[a]) * (xs[c] - xs[b])) * sign
+  end
+  local out = {}
+  local convex = true
+  for i = 1, n do
+    if turn(i, i % n + 1, (i + 1) % n + 1) < 0 then convex = false break end
+  end
+  if convex then
+    for i = 2, n - 1 do
+      out[#out + 1], out[#out + 2], out[#out + 3] = 1, i, i + 1
+    end
+    return out
+  end
+  local idx = {}
+  for i = 1, n do idx[i] = i end
+  local k, misses = 1, 0
+  while #idx > 3 do
+    local m = #idx
+    if k > m then k = 1 end
+    local a, b, c = idx[(k - 2) % m + 1], idx[k], idx[k % m + 1]
+    local ear = turn(a, b, c) > 0
+    if ear then
+      for t = 1, m do
+        local p = idx[t]
+        if p ~= a and p ~= b and p ~= c and InTriangle(xs[p], ys[p], xs[a], ys[a], xs[b], ys[b], xs[c], ys[c]) then
+          ear = false
+          break
+        end
+      end
+    end
+    if ear then
+      out[#out + 1], out[#out + 2], out[#out + 3] = a, b, c
+      table.remove(idx, k)
+      misses = 0
+    else
+      k, misses = k + 1, misses + 1
+      if misses > m then return end  -- all the way round without an ear
+    end
+  end
+  out[#out + 1], out[#out + 2], out[#out + 3] = idx[1], idx[2], idx[3]
+  return out
+end
+
+-- outlines redrawn as thick as the zoom needs
+local function Rethicken(lines, zoom)
+  if not lines then return end
+  for _, line in ipairs(lines) do
+    if line.ax then line:SetLine(line.ax, line.ay, line.bx, line.by, AREA_LINE / zoom) end
+  end
+end
+
+QH_AreaShape = {SmoothOutline = SmoothOutline, TriangulateOutline = TriangulateOutline}  -- for the tests
+
 function QuestHelper:CreateWorldMapWalker()
   if not self.Astrolabe or not QuestHelper then return end
   QuestHelper: Assert(self == QuestHelper)
@@ -584,6 +689,20 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
   
   function icon:CreateTriangles(solid, tritarget, tristartat, linetarget, linestartat, parent)
     local c, z = QuestHelper.Astrolabe:GetCurrentVirtualMapCZ()
+    local thickness = AREA_LINE / MapView()
+    
+    local function maketriangle(ax, ay, bx, by, cx, cy)
+      local tri = tritarget[tristartat]
+      if not tri then
+        tri = CreateTriangle(parent)
+        table.insert(tritarget, tri)
+      end
+      tristartat = tristartat + 1
+      
+      tri:SetTriangle(ax, ay, bx, by, cx, cy)
+      tri:SetVertexColor(0, 0, 0, 0)
+      tri:Show()
+    end
     
     local function makeline(ax, ay, bx, by)
       local tri = linetarget[linestartat]
@@ -593,18 +712,23 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
       end
       linestartat = linestartat + 1
       
-      tri:SetLine(ax, ay, bx, by)
+      tri.ax, tri.ay, tri.bx, tri.by = ax, ay, bx, by  -- to be redrawn as the zoom changes
+      tri:SetLine(ax, ay, bx, by, thickness)
       tri:SetVertexColor(0, 0, 0, 0)
       tri:Show()
     end
     
     for _, v in ipairs(solid) do
+      -- Each piece is triangles fanned out from a corner (more than one fan after a "d"), then after an "l" its
+      -- outline. The outline is drawn rounded off, and filled to match; the piece's own triangles are kept for an
+      -- outline that can't be filled.
       local adjx, adjy = v[1], v[2]
       local x, y = convertRawToScreen(v.continent, v[1], v[2], c, z)
       --print("matchup", c, v.continent, x, y)
       if x and y then
         local lx, ly = convertRawToScreen(v.continent, adjx + v[3], adjy + v[4], c, z)
-        local linemode = false
+        local linemode, missing = false, not (lx and ly)
+        local fans, xs, ys = {}, {}, {}
         
         local lidx = 5
         while lidx <= #v do
@@ -614,46 +738,51 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
               lidx = lidx + 1
               x, y = convertRawToScreen(v.continent, adjx + v[lidx], adjy + v[lidx + 1], c, z)
               lx, ly = convertRawToScreen(v.continent, adjx + v[lidx + 2], adjy + v[lidx + 3], c, z)
+              missing = missing or not (x and y and lx and ly)
               lidx = lidx + 4
             elseif v[lidx] == "l" then
               linemode = true
               lidx = lidx + 1
               x, y = convertRawToScreen(v.continent, adjx + v[lidx], adjy + v[lidx + 1], c, z)
-              lx, ly = x, y
+              missing = missing or not (x and y)
+              table.insert(xs, x or 0)
+              table.insert(ys, y or 0)
               lidx = lidx + 2
             else
               QuestHelper: Assert(false)
             end
           else
+            local tx, ty = convertRawToScreen(v.continent, adjx + v[lidx], adjy + v[lidx + 1], c, z)
+            missing = missing or not (tx and ty)
             if not linemode then
-              local tx, ty = convertRawToScreen(v.continent, adjx + v[lidx], adjy + v[lidx + 1], c, z)
-              
-              local tri = tritarget[tristartat]
-              if not tri then
-                tri = CreateTriangle(parent)
-                table.insert(tritarget, tri)
-              end
-              tristartat = tristartat + 1
-              
-              tri:SetTriangle(x, y, lx, ly, tx, ty)
-              tri:SetVertexColor(0, 0, 0, 0)
-              tri:Show()
-              
+              table.insert(fans, {x, y, lx, ly, tx, ty})
               lx, ly = tx, ty
-              lidx = lidx + 2
             else
-              local tx, ty = convertRawToScreen(v.continent, adjx + v[lidx], adjy + v[lidx + 1], c, z)
-              
-              makeline(x, y, tx, ty)
-              
-              x, y = tx, ty
-              lidx = lidx + 2
+              table.insert(xs, tx or 0)
+              table.insert(ys, ty or 0)
             end
+            lidx = lidx + 2
           end
         end
         
-        if linemode then
-          makeline(x, y, lx, ly)
+        if not missing then
+          local sx, sy = SmoothOutline(xs, ys)
+          local tris = TriangulateOutline(sx, sy)
+          if tris then
+            for i = 1, #tris, 3 do
+              local a, b, d = tris[i], tris[i + 1], tris[i + 2]
+              maketriangle(sx[a], sy[a], sx[b], sy[b], sx[d], sy[d])
+            end
+          else
+            for _, f in ipairs(fans) do maketriangle(unpack(f)) end
+          end
+          
+          if #sx >= 2 then
+            for i = 1, #sx do
+              local j = i % #sx + 1
+              makeline(sx[i], sy[i], sx[j], sy[j])
+            end
+          end
         end
       end
     end
@@ -752,6 +881,14 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
   
   function icon:OnUpdate(elapsed)
     self.phase = (self.phase + elapsed)%6.283185307179586476925286766559005768394338798750211641949889185
+    
+    -- outlines as thick on screen however far a map addon zooms in
+    local zoom = MapView()
+    if zoom ~= self.line_zoom then
+      self.line_zoom = zoom
+      Rethicken(self.line_list, zoom)
+      Rethicken(self.local_line_list, zoom)
+    end
     
     if self.next and self.objective and self.objective.cluster.solid and QuestHelper_Pref.zones == "next" then
       

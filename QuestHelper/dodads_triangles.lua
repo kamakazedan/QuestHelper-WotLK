@@ -229,83 +229,43 @@ end
 
 
 local function MakeLine(frame)
-  tex = frame:CreateTexture()
+  local tex = frame:CreateTexture()
   tex:SetTexture("Interface\\AddOns\\QuestHelper\\line")
   
   tex.parent_frame = frame
-  -- relative to 0,1 coordinates relative to parent
-  tex.SetLine = function(self, ax, ay, bx, by)
-    -- do we need to reverse the triangle? NOTE: a lot of this code is unsurprisingly copied from triangle. were you surprised by this?
-    --[[
-    if ax * by - bx * ay + bx * cy - cx * by + cx * ay - cy * ax < 0 then
-      ax, bx = bx, ax
-      ay, by = by, ay
-    end]]
-    
-    print(ax, ay, bx, by)
-    ax, bx = ax * frame:GetWidth(), bx * frame:GetWidth()
-    ay, by = ay * frame:GetHeight(), by * frame:GetHeight()
-    print(ax, ay, bx, by)
+  -- A band thickness wide (in the frame's units, 2 if not given) along the line from (ax, ay) to (bx, by), given from
+  -- 0 to 1 across and down the frame. The texture is opaque but for a clear edge: it goes over a box round the band,
+  -- with coordinates that put its opaque part on the band and its clear edge everywhere else.
+  tex.SetLine = function(self, ax, ay, bx, by, thickness)
+    local w, h = frame:GetWidth(), frame:GetHeight()
+    ax, ay, bx, by = ax * w, ay * h, bx * w, by * h
+    local dx, dy = bx - ax, by - ay
+    local len = math.sqrt(dx * dx + dy * dy)
+    local t = thickness or 2
     self:ClearAllPoints()
-    
-    local sx = math.min(ax, bx)
-    local sy = math.min(ay, by)
-    local ex = math.max(ax, bx)
-    local ey = math.max(ay, by)
-    
-    local disty = math.max(ex - sx, ey - sy) / 2 + 20
-    
-    --print("TOPLEFT", frame, "TOPLEFT", math.min(ax, bx, cx) * frame:GetWidth(), math.min(ax, bx, cx) * frame:GetHeight())
-    --print("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -math.max(ax, bx, cx) * frame:GetWidth(), -math.max(ax, bx, cx) * frame:GetHeight())
-    self:SetPoint("TOPLEFT", frame, "TOPLEFT", (sx + ex) / 2 - disty, -(sy + ey) / 2 + disty)
-    self:SetPoint("BOTTOMRIGHT", frame, "TOPLEFT", (sx + ex) / 2 + disty, -(sy + ey) / 2 - disty)
-    
-    local wid = disty * 2
-    local hei = disty * 2
-    
-    local widextra = (wid - (ex - sx)) / 2
-    local heiextra = (hei - (ey - sy)) / 2
-    
-    local base = matrix_create()
-    
-    matrix_mult(base, 1, 0, -1 / 512, 0, 1, 0)
-    matrix_rescale(base, 512 / 510, 1 / disty)
-    
-    local lenny = dist(ax, ay, bx, by)
-    print("lendist", lenny, disty * 2)
-    matrix_rescale(base, lenny / (disty * 2), 1)
-    
-    
-    local angle = atan2(ax - bx, ay - by)
-    matrix_rotate(base, -angle - 90)
-    
-    
-    print("trans", 1, 0, tigo or ((ax - sx + widextra) / wid), 0, 1, togo or ((ay - sy + heiextra) / hei))
-    matrix_mult(base, 1, 0, tigo or ((ax - sx + widextra) / wid), 0, 1, togo or ((ay - sy + heiextra) / hei))
-    matrix_print(base)
-    
-    local A, B, C, D, E, F = base[1], base[2], base[3], base[4], base[5], base[6]
-    
-    local det = A*E - B*D
-    local ULx, ULy, LLx, LLy, URx, URy, LRx, LRy
-    
-    ULx, ULy = ( B*F - C*E ) / det, ( -(A*F) + C*D ) / det
-    LLx, LLy = ( -B + B*F - C*E ) / det, ( A - A*F + C*D ) / det
-    URx, URy = ( E + B*F - C*E ) / det, ( -D - A*F + C*D ) / det
-    LRx, LRy = ( E - B + B*F - C*E ) / det, ( -D + A -(A*F) + C*D ) / det
-    
-    if testrange(ULx, ULy, LLx, LLy, URx, URy, LRx, LRy) then
-      self:SetTexCoord(3, 3, 4, 4)
+    if not (len > 1e-6 and t > 0) then
+      self:SetPoint("TOPLEFT", frame, "TOPLEFT", ax, -ay)
+      self:SetPoint("BOTTOMRIGHT", frame, "TOPLEFT", ax + 1, -ay - 1)
+      self:SetTexCoord(3, 3, 3, 4, 4, 3, 4, 4)  -- all clear edge
       return
     end
-    
-    --QuestHelper:TextOut(string.format("%f %f %f %f %f %f %f %f %f", det, ULx, ULy, LLx, LLy, URx, URy, LRx, LRy))
-    --QuestHelper:TextOut(string.format("%f %f %f %f %f %f", A, B, C, D, E, F))
-    self:SetTexCoord(ULx, ULy, LLx, LLy, URx, URy, LRx, LRy); -- the sound you hear is vomiting
-    
-    --[[spots[1]:Moove(ax, ay)
-    spots[2]:Moove(bx, by)
-    spots[3]:Moove(cx, cy)]]
+    local ex, ey = dx / len, dy / len  -- along the line
+    local nx, ny = -ey, ex             -- across it
+    local hx, hy = nx * t / 2, ny * t / 2
+    local left, right = math.min(ax - hx, ax + hx, bx - hx, bx + hx), math.max(ax - hx, ax + hx, bx - hx, bx + hx)
+    local top, bottom = math.min(ay - hy, ay + hy, by - hy, by + hy), math.max(ay - hy, ay + hy, by - hy, by + hy)
+    self:SetPoint("TOPLEFT", frame, "TOPLEFT", left, -top)
+    self:SetPoint("BOTTOMRIGHT", frame, "TOPLEFT", right, -bottom)
+    -- where each corner of the box is: how far along the line, and how far across the band
+    local function at(x, y)
+      local rx, ry = x - ax, y - ay
+      return (rx * ex + ry * ey) / len, 0.5 + (rx * nx + ry * ny) / t
+    end
+    local ulx, uly = at(left, top)
+    local llx, lly = at(left, bottom)
+    local urx, ury = at(right, top)
+    local lrx, lry = at(right, bottom)
+    self:SetTexCoord(ulx, uly, llx, lly, urx, ury, lrx, lry)
   end
   
   return tex
