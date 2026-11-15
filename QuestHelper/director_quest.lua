@@ -830,9 +830,8 @@ function QuestProcessor(user_id, db, title, level, group, variety, groupsize, wa
     end
   end
   
-  -- "(Complete)" after its title, as Questie's tracker has it
+  -- complete, which the tracker shows with a gold ? before its title
   db.qh_complete = ShownComplete(db)
-  if db.qh_complete then db.tracker_desc = db.tracker_desc .. " |cff00ff00(Complete)|r" end
   
   if turnin_new and timed and not SavedPriority(turnin) then
     QH_Route_SetClusterPriority(turnin, -1)
