@@ -133,6 +133,14 @@ end
 local function Menu_ShowAtCursor(self, auto_release)
   auto_release = (auto_release == nil) and true or auto_release
   self.auto_release = auto_release
+  
+  -- A way to close it, at the bottom as the game's own menus have
+  local last = self.items[#self.items]
+  if not (last and last.qh_close) then
+    local close = QuestHelper:CreateMenuItem(self, CLOSE or "Close")
+    close:SetFunction(function () end)
+    close.qh_close = true
+  end
 
   -- Set up the menu position, parentage, etc
   local x, y = GetCursorPosition()
@@ -408,6 +416,7 @@ end
 function QuestHelper:CreateMenuItem(menu, text)
   item = self:CreateFrame(menu)
   item:Hide()
+  item.qh_close = nil  -- frames are reused
   
   item.lchildren = self:CreateTable()
   item.rchildren = self:CreateTable()

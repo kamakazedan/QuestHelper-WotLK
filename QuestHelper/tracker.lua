@@ -470,18 +470,51 @@ end
 
 -- The priority button: the quest goes to the top of the route, and the second click puts back what it was before.
 -- What it was is kept from one session to the next.
+local function AllHighest(clusters)
+  if #clusters == 0 then return false end
+  for _, c in ipairs(clusters) do
+    if QH_Route_GetClusterPriority(c) ~= -2 then return false end
+  end
+  return true
+end
+
+-- On top: made so by the button, or every part of it still to do set to Highest some other way.
+local function QuestOnTop(quest)
+  return QH_Quest_PriorityBefore(quest.type_quest.id) ~= nil or AllHighest(QuestClusters(quest))
+end
+
+-- The route takes priorities a moment to apply, so what a press asked for is shown until it has, or for a few seconds.
+local pressed_top = {}
+
+local function ShownOnTop(quest)
+  local id = quest.type_quest.id
+  local on = QuestOnTop(quest)
+  local asked = pressed_top[id]
+  if asked then
+    if asked.on == on or GetTime() > asked.till then pressed_top[id] = nil else on = asked.on end
+  end
+  return on
+end
+
+function QH_Tracker_RescanSoon()
+  QH_AddNotifier(GetTime() + 0.5, function () QH_Tracker_Rescan() end)  -- once the route has the new priorities
+end
+
 local function ToggleTopPriority(quest)
   local id = quest.type_quest.id
   local clusters = QuestClusters(quest)
   local before = QH_Quest_PriorityBefore(id)
-  if before then
+  if ShownOnTop(quest) then
     QH_Quest_SetPriorityBefore(id, nil)
-    for _, c in ipairs(clusters) do QH_Route_SetClusterPriority(c, before) end
+    for _, c in ipairs(clusters) do QH_Route_SetClusterPriority(c, before or 0) end  -- Normal if it got to Highest some other way
+    pressed_top[id] = {on = false, till = GetTime() + 3}
   else
     QH_Quest_SetPriorityBefore(id, (clusters[1] and QH_Route_GetClusterPriority(clusters[1])) or 0)  -- the turn-in's, which comes first
     for _, c in ipairs(clusters) do QH_Route_SetClusterPriority(c, -2) end
+    pressed_top[id] = {on = true, till = GetTime() + 3}
   end
   QH_Tracker_Rescan()
+  QH_Tracker_RescanSoon()
 end
 
 local function QuestButtonClicked(self)
@@ -502,11 +535,12 @@ local function QuestButtonEnter(self)
   GameTooltip:SetOwner(self, "ANCHOR_LEFT")
   if self.qh_kind == "priority" then
     local before = QH_Quest_PriorityBefore(self.quest.type_quest.id)
-    if before then
+    if ShownOnTop(self.quest) then
       GameTooltip:SetText(QHText("PRIORITY") .. ": " .. PriorityName(-2))
-      GameTooltip:AddLine(string.format("Click to put it back to %s.", PriorityName(before)), 1, 1, 1, true)
+      GameTooltip:AddLine(string.format("Click to put it back to %s.", PriorityName(before or 0)), 1, 1, 1, true)
     else
-      GameTooltip:SetText(QHText("PRIORITY") .. ": " .. PriorityName(QuestClusters(self.quest)[1] and QH_Route_GetClusterPriority(QuestClusters(self.quest)[1])))
+      local clusters = QuestClusters(self.quest)
+      GameTooltip:SetText(QHText("PRIORITY") .. ": " .. PriorityName(clusters[1] and QH_Route_GetClusterPriority(clusters[1])))
       GameTooltip:AddLine("Click to make it QuestHelper's top priority, and again to put it back.", 1, 1, 1, true)
     end
   else
@@ -557,16 +591,15 @@ local function ShowQuestButtons(item, quest)
     prio.glow = prio:CreateTexture(nil, "BACKGROUND")
     prio.glow:SetTexture("Interface\\Buttons\\CheckButtonHilight")
     prio.glow:SetBlendMode("ADD")
-    prio.glow:SetPoint("CENTER", prio, "CENTER")
-    prio.glow:SetWidth(QUEST_ICON * 2)
-    prio.glow:SetHeight(QUEST_ICON * 2)
+    prio.glow:SetPoint("TOPLEFT", prio, "TOPLEFT", -2, 2)  -- just round the icon, so it scales with it
+    prio.glow:SetPoint("BOTTOMRIGHT", prio, "BOTTOMRIGHT", 2, -2)
   end
   prio:ClearAllPoints()
   prio:SetPoint("RIGHT", collapse, "LEFT", -2, 0)
   prio:SetNormalTexture("Interface\\GossipFrame\\ActiveQuestIcon")
   local tex = prio:GetNormalTexture()
   if tex then tex:SetDesaturated(not quest.qh_complete) end
-  if QH_Quest_PriorityBefore(quest.type_quest.id) then prio.glow:Show() else prio.glow:Hide() end
+  if ShownOnTop(quest) then prio.glow:Show() else prio.glow:Hide() end
   prio.quest = quest
   prio:Show()
 end

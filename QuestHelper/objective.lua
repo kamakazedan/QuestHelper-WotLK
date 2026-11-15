@@ -18,6 +18,7 @@ local function SetClusterPriorities(clusters, priority)
     if clust.qh_quest and QH_Quest_SetPriorityBefore then QH_Quest_SetPriorityBefore(clust.qh_quest, nil) end  -- set by hand, so the tracker's priority button starts over
   end
   if QH_Tracker_Rescan then QH_Tracker_Rescan() end
+  if QH_Tracker_RescanSoon then QH_Tracker_RescanSoon() end
 end
 
 local function IgnoreClusters(clusters)
