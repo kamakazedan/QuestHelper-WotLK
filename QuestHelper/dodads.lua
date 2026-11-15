@@ -811,15 +811,19 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
           end
           local glo = self.glow_list[gid]
           if not glo then
-            glo = QuestHelper:CreateGlowTexture(self)
+            -- The map's, as the areas are, not the icon's: a map addon that zooms in shrinks the icons to keep them one
+            -- size on screen, and a glow belonging to an icon would be pulled towards the map's corner with it.
+            glo = QuestHelper:CreateGlowTexture(QuestHelper.map_overlay)
             self.glow_list[gid] = glo
           end
           gid = gid + 1
           
+          local size = h / 20 / MapView()  -- one size on screen however far the map's zoomed in, like the icon it's under
+          glo:ClearAllPoints()
           glo:SetPoint("CENTER", QuestHelper.map_overlay, "TOPLEFT", x*w, -y*h)
           glo:SetVertexColor(triangle_r, triangle_g, triangle_b, 1)
-          glo:SetWidth(h / 20)
-          glo:SetHeight(h / 20)
+          glo:SetWidth(size)
+          glo:SetHeight(size)
           glo:Show()
         end
       end
