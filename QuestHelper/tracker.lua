@@ -523,7 +523,7 @@ local function PutBack(quest, level)
 end
 
 function QH_Tracker_RescanSoon()
-  QH_AddNotifier(GetTime() + 0.5, function () QH_Tracker_Rescan() end)  -- once the route has the new priorities
+  QH_AddNotifier(GetTime() + DOUBLE_CLICK + 0.1, function () QH_Tracker_Rescan() end)  -- once the route has the new priorities, and a double-click's had its chance
   QH_AddNotifier(GetTime() + 3.5, function () QH_Tracker_Rescan() end)  -- and once what a click asked for stops being shown anyway
 end
 
@@ -561,16 +561,17 @@ local function PriorityClicked(quest)
   local clusters = QuestClusters(quest)
   if #clusters == 0 then return end
   local level = ShownLevel(quest)
-  local back
+  local pri, back, before
   if level <= -1 then
     back = PutBack(quest, level)
-    SetQuestPriority(quest, clusters, back, nil)
+    pri = back
   else
     back = CurrentPriority(quest, clusters)
     if back <= -1 then back = 0 end  -- High or Highest isn't anything to go back to
-    SetQuestPriority(quest, clusters, -1, back)
+    pri, before = -1, back
   end
-  last_click[id] = {time = GetTime(), before = back}
+  last_click[id] = {time = GetTime(), before = back}  -- first, so a stripe clicked back to Normal waits for a second click
+  SetQuestPriority(quest, clusters, pri, before)
 end
 
 -- The button's picture is what a quest giver shows for the quest: a grey ? while it's still being done, gold once
@@ -582,30 +583,6 @@ local function ShowPriorityIcon(prio, quest)
     tex:SetDesaturated(not quest.qh_complete)
     tex:SetVertexColor(1, 1, 1)
   end
-end
-
--- A quest's priority is a thin stripe down the left of its lines, in the gap before its buttons: red at Highest,
--- orange at High, grey at Lowest and a fainter grey at Low; none at Normal.
-local STRIPE_COLOURS = {[-2] = {0.95, 0.1, 0.1, 1}, [-1] = {1, 0.5, 0.1, 1}, [1] = {0.6, 0.6, 0.6, 0.45}, [2] = {0.6, 0.6, 0.6, 1}}
-local STRIPE_WIDTH = 3
-
-local function ShowPriorityStripe(row, quest, height)
-  local colour = row and quest and STRIPE_COLOURS[ShownLevel(quest)]
-  if not colour then
-    if row and row.qh_stripe then row.qh_stripe:Hide() end
-    return
-  end
-  local stripe = row.qh_stripe
-  if not stripe then
-    stripe = row:CreateTexture(nil, "ARTWORK")
-    row.qh_stripe = stripe
-  end
-  stripe:SetTexture(colour[1], colour[2], colour[3], colour[4])
-  stripe:ClearAllPoints()
-  stripe:SetPoint("TOPLEFT", row, "TOPLEFT", -QUEST_TEXT_X, -1)  -- at the tracker's left edge, a pixel down so stripes one under the other stay apart
-  stripe:SetWidth(STRIPE_WIDTH)
-  stripe:SetHeight(math.max(height - 1, 1))
-  stripe:Show()
 end
 
 local function RefreshTooltip(self)
@@ -702,6 +679,61 @@ local function ShowQuestButtons(item, quest, listed)
   ShowPriorityIcon(prio, quest)
   prio.quest = quest
   prio:Show()
+end
+
+-- A quest's priority is a thin stripe down the left of its lines, in the gap before its buttons: red at Highest,
+-- orange at High, grey at Lowest and a fainter grey at Low; none at Normal. Clicking it does what clicking the ? does.
+local STRIPE_COLOURS = {[-2] = {0.95, 0.1, 0.1, 1}, [-1] = {1, 0.5, 0.1, 1}, [1] = {0.6, 0.6, 0.6, 0.45}, [2] = {0.6, 0.6, 0.6, 1}}
+local STRIPE_WIDTH = 3
+
+local function StripeButton(row)
+  local stripe = row.qh_stripe
+  if not stripe then
+    stripe = CreateFrame("Button", nil, row)
+    stripe.qh_kind = "priority"
+    stripe.bar = stripe:CreateTexture(nil, "ARTWORK")
+    stripe.bar:SetAllPoints(stripe)
+    local lit = stripe:CreateTexture(nil, "HIGHLIGHT")  -- brighter while the mouse is over it
+    lit:SetAllPoints(stripe)
+    lit:SetTexture(1, 1, 1, 0.35)
+    lit:SetBlendMode("ADD")
+    stripe:SetHitRectInsets(-2, -1, 0, 0)  -- a little easier to hit than it is to see
+    QH_Hook(stripe, "OnClick", QuestButtonClicked)
+    QH_Hook(stripe, "OnDoubleClick", QuestButtonDoubleClicked)
+    QH_Hook(stripe, "OnEnter", QuestButtonEnter)
+    QH_Hook(stripe, "OnLeave", QuestButtonLeave)
+    row.qh_stripe = stripe
+  end
+  return stripe
+end
+
+local function ShowPriorityStripe(row, quest, height)
+  local stripe = row and row.qh_stripe
+  if not quest then
+    if stripe then stripe:Hide() stripe.qh_lit = nil end
+    return
+  end
+  local colour, fade = STRIPE_COLOURS[ShownLevel(quest)], 1
+  if colour then
+    stripe = StripeButton(row)
+    stripe.qh_colour, stripe.qh_lit = colour, quest  -- what it was last drawn for
+  else
+    -- Just clicked back to Normal: it stays a moment, faded, for the second click of a double-click to land on.
+    local last = last_click[quest.type_quest.id]
+    if stripe and stripe.qh_lit == quest and last and GetTime() - last.time <= DOUBLE_CLICK then
+      colour, fade = stripe.qh_colour, 0.4
+    else
+      if stripe then stripe:Hide() stripe.qh_lit = nil end
+      return
+    end
+  end
+  stripe.bar:SetTexture(colour[1], colour[2], colour[3], colour[4] * fade)
+  stripe:ClearAllPoints()
+  stripe:SetPoint("TOPLEFT", row, "TOPLEFT", -QUEST_TEXT_X, -1)  -- at the tracker's left edge
+  stripe:SetWidth(STRIPE_WIDTH)
+  stripe:SetHeight(math.max(height - 3, 1))  -- short of the next quest's by a few pixels, so they stay apart
+  stripe.quest = quest
+  stripe:Show()
 end
 
 local function addItem(objective, y, meta, indent, listed)
@@ -933,7 +965,7 @@ end
 
 local function removeUnusedItem(item)
   if item.toggle then item.toggle:Hide() end
-  if item.qh_stripe then item.qh_stripe:Hide() end
+  if item.qh_stripe then item.qh_stripe:Hide() item.qh_stripe.qh_lit = nil end
   item.t = 0
   item.sx, item.sy, item.dx, item.dy = item.x, item.y, item.x+30, item.y
   QH_Hook(item, "OnMouseDown", nil)
