@@ -432,9 +432,9 @@ local specitem_max = 1
 local specitem_unused = {}
 
 -- This is adding a *single item*. This won't be called by the main parsing loop, but it does need some serious hackery. Let's see now
--- A quest's line has two buttons before its title, as Questie's tracker has: its priority button (a white ?, gold at
--- High or while QuestHelper's taking you to the quest, a red ! at Highest) and the button that shows or hides its
--- objectives.
+-- A quest's line has two buttons before its title, as Questie's tracker has: its priority button (a quest giver's ?,
+-- grey while it's being done, gold once it's complete) and the button that shows or hides its objectives. Its
+-- priority is a coloured stripe down the left.
 local QUEST_ICON = 12
 local QUEST_TEXT_X = 4 + 2 * (QUEST_ICON + 2)
 local QUEST_OBJECTIVE_X = QUEST_TEXT_X + 10
@@ -469,7 +469,7 @@ local function PriorityName(pri)
   return QHText("PRIORITY" .. tostring(math.max(1, math.min(5, (pri or 0) + 3))))
 end
 
--- The route as last worked out. Its first objective after where you are is the one QuestHelper's taking you to.
+-- The route as last worked out.
 local route = {}
 
 -- The priority button. A click makes a quest High and a double-click Highest. Clicked while it's up there, it puts back
@@ -477,17 +477,19 @@ local route = {}
 -- session to the next.
 local DOUBLE_CLICK = 0.5
 
--- How far up a quest is: Highest (-2) when every part of it still to do is at Highest, High (-1) when they're all at
--- least High, nil otherwise.
-local function RaisedLevel(clusters)
-  if #clusters == 0 then return nil end
-  local level = -2
+-- Where a quest stands as a whole: Highest (-2) when every part of it still to do is at Highest, High (-1) when
+-- they're all at least High, Lowest (2) and Low (1) the same way down, and Normal (0) otherwise.
+local function QuestLevel(clusters)
+  if #clusters == 0 then return 0 end
+  local top, bottom = 2, -2
   for _, c in ipairs(clusters) do
-    local pri = QH_Route_GetClusterPriority(c)
-    if not pri or pri > -1 then return nil end
-    if pri > level then level = pri end
+    local pri = QH_Route_GetClusterPriority(c) or 0
+    if pri < top then top = pri end
+    if pri > bottom then bottom = pri end
   end
-  return level
+  if bottom <= -1 then return bottom end  -- the lowest of them, Highest only if they all are
+  if top >= 1 then return top end
+  return 0
 end
 
 -- The route takes a moment to apply a priority, so what a click asked for is what's shown until it has, or for a few
@@ -497,7 +499,7 @@ local last_click = {}  -- when each quest's button was last clicked, and what a 
 
 local function ShownLevel(quest)
   local id = quest.type_quest.id
-  local level = RaisedLevel(QuestClusters(quest))
+  local level = QuestLevel(QuestClusters(quest))
   local asked = pressed[id]
   if asked then
     if asked.level == level or GetTime() > asked.till then pressed[id] = nil else level = asked.level end
@@ -534,7 +536,7 @@ local function SetQuestPriority(quest, clusters, pri, before)
   local id = quest.type_quest.id
   QH_Quest_SetPriorityBefore(id, before)
   for _, c in ipairs(clusters) do QH_Route_SetClusterPriority(c, pri) end
-  pressed[id] = {level = (pri <= -1) and pri or nil, pri = pri, till = GetTime() + 3}
+  pressed[id] = {level = pri, pri = pri, till = GetTime() + 3}
   QH_Tracker_Rescan()
   QH_Tracker_RescanSoon()
 end
@@ -560,7 +562,7 @@ local function PriorityClicked(quest)
   if #clusters == 0 then return end
   local level = ShownLevel(quest)
   local back
-  if level then
+  if level <= -1 then
     back = PutBack(quest, level)
     SetQuestPriority(quest, clusters, back, nil)
   else
@@ -571,30 +573,39 @@ local function PriorityClicked(quest)
   last_click[id] = {time = GetTime(), before = back}
 end
 
--- Whether QuestHelper's taking you to this quest now: its next objective is one of this quest's.
-local function Navigating(quest)
-  local nxt = route[2]
-  return nxt ~= nil and nxt.why == quest
-end
-
--- The priority button's picture: a red ! at Highest, a gold ? at High or while QuestHelper's taking you to the quest,
--- and a white ? otherwise.
+-- The button's picture is what a quest giver shows for the quest: a grey ? while it's still being done, gold once
+-- it's complete.
 local function ShowPriorityIcon(prio, quest)
-  local level = ShownLevel(quest)
-  if level == -2 then
-    prio:SetNormalTexture("Interface\\GossipFrame\\AvailableQuestIcon")
-  else
-    prio:SetNormalTexture("Interface\\GossipFrame\\ActiveQuestIcon")
-  end
+  prio:SetNormalTexture("Interface\\GossipFrame\\ActiveQuestIcon")
   local tex = prio:GetNormalTexture()
-  if not tex then return end
-  if level == -2 then
-    tex:SetDesaturated(true)  -- grey first, so the tint comes out a proper red
-    tex:SetVertexColor(1, 0.15, 0.15)
-  else
-    tex:SetDesaturated(not (level == -1 or Navigating(quest)))
+  if tex then
+    tex:SetDesaturated(not quest.qh_complete)
     tex:SetVertexColor(1, 1, 1)
   end
+end
+
+-- A quest's priority is a thin stripe down the left of its lines, in the gap before its buttons: red at Highest,
+-- orange at High, grey at Lowest and a fainter grey at Low; none at Normal.
+local STRIPE_COLOURS = {[-2] = {0.95, 0.1, 0.1, 1}, [-1] = {1, 0.5, 0.1, 1}, [1] = {0.6, 0.6, 0.6, 0.45}, [2] = {0.6, 0.6, 0.6, 1}}
+local STRIPE_WIDTH = 3
+
+local function ShowPriorityStripe(row, quest, height)
+  local colour = row and quest and STRIPE_COLOURS[ShownLevel(quest)]
+  if not colour then
+    if row and row.qh_stripe then row.qh_stripe:Hide() end
+    return
+  end
+  local stripe = row.qh_stripe
+  if not stripe then
+    stripe = row:CreateTexture(nil, "ARTWORK")
+    row.qh_stripe = stripe
+  end
+  stripe:SetTexture(colour[1], colour[2], colour[3], colour[4])
+  stripe:ClearAllPoints()
+  stripe:SetPoint("TOPLEFT", row, "TOPLEFT", -QUEST_TEXT_X, -1)  -- at the tracker's left edge, a pixel down so stripes one under the other stay apart
+  stripe:SetWidth(STRIPE_WIDTH)
+  stripe:SetHeight(math.max(height - 1, 1))
+  stripe:Show()
 end
 
 local function RefreshTooltip(self)
@@ -627,7 +638,7 @@ local function QuestButtonEnter(self)
   if self.qh_kind == "priority" then
     local quest = self.quest
     local level = ShownLevel(quest)
-    if level then
+    if level <= -1 then
       GameTooltip:SetText(QHText("PRIORITY") .. ": " .. PriorityName(level))
       local back = PriorityName(PutBack(quest, level))
       if level == -2 then
@@ -640,7 +651,6 @@ local function QuestButtonEnter(self)
       GameTooltip:SetText(QHText("PRIORITY") .. ": " .. PriorityName(#clusters > 0 and CurrentPriority(quest, clusters) or 0))
       GameTooltip:AddLine(string.format("Click to make it %s, or double-click to make it %s.", PriorityName(-1), PriorityName(-2)), 1, 1, 1, true)
     end
-    if Navigating(quest) then GameTooltip:AddLine("QuestHelper is taking you to this quest now.", .82, .82, .82, true) end
   else
     GameTooltip:SetText(QuestCollapsed(self.quest) and "Show objectives" or "Hide objectives")
   end
@@ -746,6 +756,7 @@ local function addItem(objective, y, meta, indent, listed)
   end
   
   ShowQuestButtons(item, (meta == true and IsQuestRow(objective)) and objective or nil, listed)
+  if item.qh_stripe then item.qh_stripe:Hide() end  -- a quest's is drawn once its lines are
   
   if item.ex ~= x or item.ey ~= y then
     item.sx, item.sy, item.ex, item.ey = item.x, item.y, x, y
@@ -782,7 +793,7 @@ local function addItem(objective, y, meta, indent, listed)
     item.specitem:SetScale(0.9)
     item.specitem:ClearAllPoints()
     item.specitem:SetParent(item)
-    item.specitem:SetPoint("TOPRIGHT", item, "TOPLEFT", (item.qh_priority and item.qh_priority:IsShown()) and (4 - QUEST_TEXT_X) or 0, 0)  -- clear of a quest's buttons
+    item.specitem:SetPoint("TOPRIGHT", item, "TOPLEFT", (item.qh_priority and item.qh_priority:IsShown()) and (-6 - QUEST_TEXT_X) or 0, 0)  -- clear of a quest's buttons and its priority stripe
     
     local _, tex, charges = GetQuestLogSpecialItemInfo(objective.type_quest.index)
     item.specitem:SetID(objective.type_quest.index)
@@ -795,17 +806,19 @@ local function addItem(objective, y, meta, indent, listed)
     spacer = h
   end
   
-  return w+x+4, y+h, y+h+spacer
+  return w+x+4, y+h, y+h+spacer, item
 end
 
 local function addMetaObjective(metaobj, items, y, depth)
   local seen_texts = QuestHelper:CreateTable("amo_seen_texts")
   
   local quest = IsQuestRow(metaobj)
-  local x, spacer
-  x, y, spacer = addItem(metaobj, y, true, quest and QUEST_TEXT_X or nil, #items > 0)
+  local top = y
+  local x, spacer, row
+  x, y, spacer, row = addItem(metaobj, y, true, quest and QUEST_TEXT_X or nil, #items > 0)
   if QuestCollapsed(metaobj) then  -- its objectives hidden, from its button
     QuestHelper:ReleaseTable(seen_texts)
+    ShowPriorityStripe(row, quest and metaobj, y - top)
     return math.max(y, spacer), depth + 1
   end
   for _, v in ipairs(items) do
@@ -815,6 +828,7 @@ local function addMetaObjective(metaobj, items, y, depth)
     end
   end
   QuestHelper:ReleaseTable(seen_texts)
+  ShowPriorityStripe(row, quest and metaobj, y - top)  -- down the quest's title and objectives
   return math.max(y, spacer), depth + #items + 1
 end
 
@@ -919,6 +933,7 @@ end
 
 local function removeUnusedItem(item)
   if item.toggle then item.toggle:Hide() end
+  if item.qh_stripe then item.qh_stripe:Hide() end
   item.t = 0
   item.sx, item.sy, item.dx, item.dy = item.x, item.y, item.x+30, item.y
   QH_Hook(item, "OnMouseDown", nil)
