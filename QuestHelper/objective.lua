@@ -15,7 +15,9 @@ local UserIgnored = {
 local function SetClusterPriorities(clusters, priority)
   for _, clust in ipairs(clusters) do
     QH_Route_SetClusterPriority(clust, priority)
+    if clust.qh_quest and QH_Quest_SetPriorityBefore then QH_Quest_SetPriorityBefore(clust.qh_quest, nil) end  -- set by hand, so the tracker's priority button starts over
   end
+  if QH_Tracker_Rescan then QH_Tracker_Rescan() end
 end
 
 local function IgnoreClusters(clusters)

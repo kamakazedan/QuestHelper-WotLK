@@ -432,14 +432,153 @@ local specitem_max = 1
 local specitem_unused = {}
 
 -- This is adding a *single item*. This won't be called by the main parsing loop, but it does need some serious hackery. Let's see now
-local function addItem(objective, y, meta)
+-- A quest's line has two buttons before its title, as Questie's tracker has: its priority button (a quest giver's
+-- "?", gold once it's complete, glowing while it's the top priority) and the button that shows or hides its objectives.
+local QUEST_ICON = 12
+local QUEST_TEXT_X = 4 + 2 * (QUEST_ICON + 2)
+local QUEST_OBJECTIVE_X = QUEST_TEXT_X + 10
+
+local function IsQuestRow(metaobj)
+  return metaobj and metaobj.finish and metaobj.type_quest and metaobj.type_quest.id and true or false
+end
+
+-- quests whose objectives are hidden, per character, by quest id
+local function CollapsedQuests(create)
+  local all = rawget(QuestHelper_Pref, "quest_collapsed")
+  if type(all) ~= "table" then
+    if not create then return nil end
+    all = {}
+    QuestHelper_Pref.quest_collapsed = all
+  end
+  local key = (GetRealmName() or "") .. "/" .. (UnitName("player") or "")
+  if type(all[key]) ~= "table" then
+    if not create then return nil end
+    all[key] = {}
+  end
+  return all[key]
+end
+
+local function QuestCollapsed(metaobj)
+  if not IsQuestRow(metaobj) then return false end
+  local set = CollapsedQuests()
+  return set and set[metaobj.type_quest.id] or false
+end
+
+local function PriorityName(pri)
+  return QHText("PRIORITY" .. tostring(math.max(1, math.min(5, (pri or 0) + 3))))
+end
+
+-- The priority button: the quest goes to the top of the route, and the second click puts back what it was before.
+-- What it was is kept from one session to the next.
+local function ToggleTopPriority(quest)
+  local id = quest.type_quest.id
+  local clusters = QuestClusters(quest)
+  local before = QH_Quest_PriorityBefore(id)
+  if before then
+    QH_Quest_SetPriorityBefore(id, nil)
+    for _, c in ipairs(clusters) do QH_Route_SetClusterPriority(c, before) end
+  else
+    QH_Quest_SetPriorityBefore(id, (clusters[1] and QH_Route_GetClusterPriority(clusters[1])) or 0)  -- the turn-in's, which comes first
+    for _, c in ipairs(clusters) do QH_Route_SetClusterPriority(c, -2) end
+  end
+  QH_Tracker_Rescan()
+end
+
+local function QuestButtonClicked(self)
+  if not self.quest then return end
+  if self.qh_kind == "priority" then
+    ToggleTopPriority(self.quest)
+  else
+    local set = CollapsedQuests(true)
+    local id = self.quest.type_quest.id
+    set[id] = (not set[id]) or nil
+    QH_Tracker_Rescan()
+  end
+  if GameTooltip:IsOwned(self) and self:GetScript("OnEnter") then self:GetScript("OnEnter")(self) end
+end
+
+local function QuestButtonEnter(self)
+  if not self.quest then return end
+  GameTooltip:SetOwner(self, "ANCHOR_LEFT")
+  if self.qh_kind == "priority" then
+    local before = QH_Quest_PriorityBefore(self.quest.type_quest.id)
+    if before then
+      GameTooltip:SetText(QHText("PRIORITY") .. ": " .. PriorityName(-2))
+      GameTooltip:AddLine(string.format("Click to put it back to %s.", PriorityName(before)), 1, 1, 1, true)
+    else
+      GameTooltip:SetText(QHText("PRIORITY") .. ": " .. PriorityName(QuestClusters(self.quest)[1] and QH_Route_GetClusterPriority(QuestClusters(self.quest)[1])))
+      GameTooltip:AddLine("Click to make it QuestHelper's top priority, and again to put it back.", 1, 1, 1, true)
+    end
+  else
+    GameTooltip:SetText(QuestCollapsed(self.quest) and "Show objectives" or "Hide objectives")
+  end
+  GameTooltip:Show()
+end
+
+local function QuestButtonLeave(self)
+  if GameTooltip:IsOwned(self) then GameTooltip:Hide() end
+end
+
+local function QuestButton(item, key, kind)
+  local b = item[key]
+  if not b then
+    b = CreateFrame("Button", nil, item)
+    b:SetWidth(QUEST_ICON)
+    b:SetHeight(QUEST_ICON)
+    b.qh_kind = kind
+    QH_Hook(b, "OnClick", QuestButtonClicked)
+    QH_Hook(b, "OnEnter", QuestButtonEnter)
+    QH_Hook(b, "OnLeave", QuestButtonLeave)
+    item[key] = b
+  end
+  return b
+end
+
+-- the buttons on a quest's line; any other line (a frame may have been a quest's line before) has none
+local function ShowQuestButtons(item, quest)
+  if not quest then
+    if item.qh_collapse then item.qh_collapse:Hide() end
+    if item.qh_priority then item.qh_priority:Hide() end
+    return
+  end
+  
+  local collapse = QuestButton(item, "qh_collapse", "collapse")
+  collapse:ClearAllPoints()
+  collapse:SetPoint("RIGHT", item, "LEFT", -2, 0)
+  local collapsed = QuestCollapsed(quest)
+  collapse:SetNormalTexture(collapsed and "Interface\\Buttons\\UI-PlusButton-Up" or "Interface\\Buttons\\UI-MinusButton-Up")
+  collapse:SetPushedTexture(collapsed and "Interface\\Buttons\\UI-PlusButton-Down" or "Interface\\Buttons\\UI-MinusButton-Down")
+  collapse:SetHighlightTexture("Interface\\Buttons\\UI-PlusButton-Hilight", "ADD")
+  collapse.quest = quest
+  collapse:Show()
+  
+  local prio = QuestButton(item, "qh_priority", "priority")
+  if not prio.glow then
+    prio.glow = prio:CreateTexture(nil, "BACKGROUND")
+    prio.glow:SetTexture("Interface\\Buttons\\CheckButtonHilight")
+    prio.glow:SetBlendMode("ADD")
+    prio.glow:SetPoint("CENTER", prio, "CENTER")
+    prio.glow:SetWidth(QUEST_ICON * 2)
+    prio.glow:SetHeight(QUEST_ICON * 2)
+  end
+  prio:ClearAllPoints()
+  prio:SetPoint("RIGHT", collapse, "LEFT", -2, 0)
+  prio:SetNormalTexture("Interface\\GossipFrame\\ActiveQuestIcon")
+  local tex = prio:GetNormalTexture()
+  if tex then tex:SetDesaturated(not quest.qh_complete) end
+  if QH_Quest_PriorityBefore(quest.type_quest.id) then prio.glow:Show() else prio.glow:Hide() end
+  prio.quest = quest
+  prio:Show()
+end
+
+local function addItem(objective, y, meta, indent)
   local obj_key = objective
   if obj_key.cluster then obj_key = obj_key.cluster end
   used_count[obj_key] = (used_count[obj_key] or 0) + 1
   if not used_items[obj_key] then used_items[obj_key] = QuestHelper:CreateTable("additem used_items") end
   local item = used_items[obj_key][used_count[obj_key]]
   
-  local x = (meta == "zone") and 0 or (meta and 4 or 20)
+  local x = indent or ((meta == "zone") and 0 or (meta and 4 or 20))
   
   if not item then
     used_items[obj_key][used_count[obj_key]] = allocateItem()
@@ -453,7 +592,7 @@ local function addItem(objective, y, meta)
       item.text:SetTextColor(.82, .65, 0)
     else
       item.text:SetFont(QuestHelper.font.sans, 12)
-      item.text:SetTextColor(.82, .82, .82)
+      item.text:SetTextColor(1, 1, 1)  -- white, as Questie has them, unless Objective Color colours them
     end
     
     item.obj = objective
@@ -482,6 +621,8 @@ local function addItem(objective, y, meta)
       item:EnableMouse(true)
     end
   end
+  
+  ShowQuestButtons(item, (meta == true and IsQuestRow(objective)) and objective or nil)
   
   if item.ex ~= x or item.ey ~= y then
     item.sx, item.sy, item.ex, item.ey = item.x, item.y, x, y
@@ -518,7 +659,7 @@ local function addItem(objective, y, meta)
     item.specitem:SetScale(0.9)
     item.specitem:ClearAllPoints()
     item.specitem:SetParent(item)
-    item.specitem:SetPoint("TOPRIGHT", item, "TOPLEFT", 0, 0)
+    item.specitem:SetPoint("TOPRIGHT", item, "TOPLEFT", (item.qh_priority and item.qh_priority:IsShown()) and (4 - QUEST_TEXT_X) or 0, 0)  -- clear of a quest's buttons
     
     local _, tex, charges = GetQuestLogSpecialItemInfo(objective.type_quest.index)
     item.specitem:SetID(objective.type_quest.index)
@@ -537,11 +678,16 @@ end
 local function addMetaObjective(metaobj, items, y, depth)
   local seen_texts = QuestHelper:CreateTable("amo_seen_texts")
   
+  local quest = IsQuestRow(metaobj)
   local x, spacer
-  x, y, spacer = addItem(metaobj, y, true)
+  x, y, spacer = addItem(metaobj, y, true, quest and QUEST_TEXT_X or nil)
+  if QuestCollapsed(metaobj) then  -- its objectives hidden, from its button
+    QuestHelper:ReleaseTable(seen_texts)
+    return math.max(y, spacer), depth + 1
+  end
   for _, v in ipairs(items) do
     if not v.tracker_hide_dupes or not seen_texts[v.tracker_desc] then
-      x, y = addItem(v, y, false)
+      x, y = addItem(v, y, false, quest and QUEST_OBJECTIVE_X or nil)
       if v.tracker_desc then seen_texts[v.tracker_desc] = true end
     end
   end
@@ -582,6 +728,7 @@ local function QueueMetaObjective(queue, metaobj, items, node, owned, depth)
   table.insert(queue, entry)
   
   if minimised then return depth end  -- it still puts its heading where it would have been, but takes no room
+  if QuestCollapsed(metaobj) then return depth + 1 end  -- its title only
   return depth + #items + 1
 end
 

@@ -186,6 +186,7 @@ local function BuildQuestCriteria(ite, q, questid, i)
     ttx.tooltip_canned[k] = {ttx.tooltip_canned[k], ttx} -- we're gonna be handing out this table to other modules, so this isn't as dumb as it looks
   end
   
+  ttx.qh_quest, ttx.qh_part = questid, i
   ite[i] = ttx
 end
 
@@ -215,6 +216,7 @@ local function GetQuestMetaobjective(questid, lbcount)
     end end
     
     local ite = {type_quest = {__backlink = ite}} -- we don't want to mutate the existing quest data. backlink exists only for nasty GC reasons
+    ite.type_quest.id = questid  -- for what's remembered about a quest from one session to the next
     ite.desc = string.format("Quest %s", q and q.name or "(unknown)")  -- this gets changed later anyway
     
     for i = 1, lbcount do
@@ -223,7 +225,7 @@ local function GetQuestMetaobjective(questid, lbcount)
     ite.criteria_built = lbcount
     
     do
-      local ttx = {type_quest_finish = true}
+      local ttx = {type_quest_finish = true, qh_quest = questid, qh_part = 0}  -- part 0 is the turn-in, part n the nth objective
       --QuestHelper:TextOut(string.format("finny %d", q.finish.loc and #q.finish.loc or -1))
       if q and q.finish and q.finish.loc then
         ttx.solid = horribledupe(q.finish.solid)
@@ -503,6 +505,93 @@ end
 
 local own_name  -- the name our own quest log is filed under
 
+-- Priorities set on quests, kept per character from one session to the next: [quest id] = {[0] = the turn-in's,
+-- [n] = the nth objective's, before = what the tracker's priority button will put back}.
+local function PriorityMemory(create)
+  local name = own_name or UnitName("player")
+  if not name then return nil end
+  local all = rawget(QuestHelper_Pref, "quest_priorities")
+  if type(all) ~= "table" then
+    if not create then return nil end
+    all = {}
+    QuestHelper_Pref.quest_priorities = all
+  end
+  local key = (GetRealmName() or "") .. "/" .. name
+  if type(all[key]) ~= "table" then
+    if not create then return nil end
+    all[key] = {}
+  end
+  return all[key]
+end
+
+-- the priority a part of a quest had last session, if it wasn't Normal
+local function SavedPriority(cluster)
+  local memory = cluster.qh_quest and PriorityMemory()
+  local saved = memory and memory[cluster.qh_quest]
+  local pri = saved and saved[cluster.qh_part]
+  return (type(pri) == "number" and pri ~= 0) and pri or nil
+end
+
+function QH_Quest_PriorityBefore(questid)
+  local memory = PriorityMemory()
+  local saved = memory and memory[questid]
+  return saved and saved.before
+end
+
+function QH_Quest_SetPriorityBefore(questid, pri)
+  local memory = PriorityMemory(pri ~= nil)
+  if not memory then return end
+  local saved = memory[questid]
+  if pri == nil then
+    if saved then
+      saved.before = nil
+      if not next(saved) then memory[questid] = nil end
+    end
+  else
+    if not saved then saved = {}; memory[questid] = saved end
+    saved.before = pri
+  end
+end
+
+-- Each quest's priorities as the session ends, for the next one. A quest neither in the route nor in our log any more
+-- is forgotten; one not seen this session at all is left as it was.
+local function RememberPriorities()
+  local memory = PriorityMemory(true)
+  if not memory then return end
+  for questid, quest in pairs(quest_list) do
+    local parts, routed = {}, false
+    local function note(cluster, part)
+      local pri = cluster and QH_Route_GetClusterPriority(cluster)
+      if pri ~= nil then routed = true end
+      if pri and pri ~= 0 then parts[part] = pri end
+    end
+    note(quest.finish, 0)
+    for i = 1, quest.criteria_built or 0 do note(quest[i], i) end
+    local old = memory[questid]
+    if routed then
+      parts.before = old and old.before
+      memory[questid] = next(parts) and parts or nil
+    elseif old and not quest.type_quest.index then
+      memory[questid] = nil
+    end
+  end
+end
+
+-- Whether a quest is shown as complete: ours if it's in our log, else every party member's who has it.
+local function ShownComplete(db)
+  local users = InsertedItems[db.finish]
+  local by = db.complete_by or {}
+  if users and users[own_name] then return by[own_name] == true end
+  local any = false
+  if users then
+    for name in pairs(users) do
+      if not by[name] then return false end
+      any = true
+    end
+  end
+  return any
+end
+
 -- A quest has left our log. It may well carry on as a party member's quest, but nothing about our log applies to it any more.
 local function ForgetQuestFromLog(quest)
   QH_Tracker_Unpin(quest.finish[1], true)
@@ -554,6 +643,8 @@ local function RefreshItem(id, item, required)
   local added = false
   if not InsertedItems[item] then
     QH_Route_ClusterAdd(item)
+    local pri = SavedPriority(item)  -- as it was last session
+    if pri then QH_Route_SetClusterPriority(item, pri) end
     --QH_Route_SetClusterPriority(item, math.random(5))
     added = true
     InsertedItems[item] = {}
@@ -634,6 +725,8 @@ end
 function QuestProcessor(user_id, db, title, level, group, variety, groupsize, watched, complete, lbcount, timed)
   db.desc = title
   db.tracker_desc = MakeQuestTitle(title, level)
+  db.complete_by = db.complete_by or {}
+  db.complete_by[user_id] = (complete == 1) or (complete ~= -1 and lbcount == 0)  -- nothing to do but hand it in counts, as in the quest log
   
   db.type_quest.objectives = lbcount
   db.type_quest.level = level
@@ -718,7 +811,11 @@ function QuestProcessor(user_id, db, title, level, group, variety, groupsize, wa
     end
   end
   
-  if turnin_new and timed then
+  -- "(Complete)" after its title, as Questie's tracker has it
+  db.qh_complete = ShownComplete(db)
+  if db.qh_complete then db.tracker_desc = db.tracker_desc .. " |cff00ff00(Complete)|r" end
+  
+  if turnin_new and timed and not SavedPriority(turnin) then
     QH_Route_SetClusterPriority(turnin, -1)
   end
 end
@@ -1117,6 +1214,7 @@ local function QH_DumpCommUser(user)
 end
 
 QH_Event("PLAYER_ENTERING_WORLD", UpdateTrigger)
+QH_Event("PLAYER_LOGOUT", function () QH_SafeCall(RememberPriorities) end)
 QH_Event("UNIT_QUEST_LOG_CHANGED", UpdateTrigger)
 QH_Event("QUEST_LOG_UPDATE", QH_UpdateQuests)
 
