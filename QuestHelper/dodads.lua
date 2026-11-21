@@ -10,11 +10,12 @@ local function convertLocation(p)
   return QuestHelper.Astrolabe:FromAbsoluteContinentPosition(p.c, p.x, p.y)
 end
 
+-- also gives the continent the spot is on, Astrolabe's
 local function convertLocationToScreen(p, c, z)
   local pc, _, px, py = convertLocation(p)
   local ox, oy = QuestHelper.Astrolabe:TranslateWorldMapPosition(pc, 0, px, py, c, z)
   --QuestHelper:TextOut(string.format("%f/%f/%f to %f/%f/%f to %f/%f %f/%f", p.c, p.x, p.y, pc, px, py, c, z, ox, oy))
-  return ox, oy
+  return ox, oy, pc
 end
 
 local function convertRawToScreen(tc, x, y, c, z)
@@ -22,6 +23,12 @@ local function convertRawToScreen(tc, x, y, c, z)
   return QuestHelper.Astrolabe:TranslateWorldMapPosition(rc, 0, rx, ry, c, z)
 end
 
+-- Everything QuestHelper puts on the world map is drawn on map_overlay, which lies over the map (WorldMapButton), and
+-- cropped by the scroll frame holding it. On the game's own map the crop is the map, so nothing spills onto the
+-- window round it. A map addon that zooms (BetterMaps, Magnify and the like) puts the map into a scroll frame of its
+-- own, and may show more than the map in it: BetterMaps' free camera shows the land round a zone's map. There the
+-- crop is that scroll frame, the part of the map in view, so the route and the icons go on past the map's edges over
+-- the land shown, and map_overlay is kept on the map by scrolling the crop as far as the map addon scrolls the map.
 local scrolf = CreateFrame("SCROLLFRAME", nil, WorldMapButton)
 scrolf:SetFrameLevel(WorldMapButton:GetFrameLevel()+1)
 scrolf:SetAllPoints()
@@ -33,58 +40,84 @@ QuestHelper.map_overlay:SetAllPoints()
 
 QuestHelper.map_overlay_uncropped = scrolf
 
-local function ClampLine(x1, y1, x2, y2)
-  if x1 and y1 and x2 and y2 then
-    local x_div, y_div = (x2-x1), (y2-y1)
-    local x_0 = y1-x1/x_div*y_div
-    local x_1 = y1+(1-x1)/x_div*y_div
-    local y_0 = x1-y1/y_div*x_div
-    local y_1 = x1+(1-y1)/y_div*x_div
-    
-    if y1 < 0 then
-      x1 = y_0
-      y1 = 0
-    end
-    
-    if y2 < 0 then
-      x2 = y_0
-      y2 = 0
-    end
-    
-    if y1 > 1 then
-      x1 = y_1
-      y1 = 1
-    end
-    
-    if y2 > 1 then
-      x2 = y_1
-      y2 = 1
-    end
-    
-    if x1 < 0 then
-      y1 = x_0
-      x1 = 0
-    end
-    
-    if x2 < 0 then
-      y2 = x_0
-      x2 = 0
-    end
-    
-    if x1 > 1 then
-      y1 = x_1
-      x1 = 1
-    end
-    
-    if x2 > 1 then
-      y2 = x_1
-      x2 = 1
-    end
-    
-    if x1 >= 0 and x2 >= 0 and y1 >= 0 and y2 >= 0 and x1 <= 1 and x2 <= 1 and y1 <= 1 and y2 <= 1 then
-      return x1, y1, x2, y2
-    end
+local view_frame  -- the map addon's scroll frame, once the crop is its
+
+-- the map addon's scroll frame holding the map, if there is one
+local function ZoomScrollFrame()
+  local view = WorldMapDetailFrame and WorldMapDetailFrame:GetParent()
+  if view and view.GetObjectType and view:GetObjectType() == "ScrollFrame" and view.GetScrollChild
+      and view:GetScrollChild() == WorldMapDetailFrame then
+    return view
   end
+end
+
+-- The crop scrolled as far as the map addon's scroll frame. The two share their corner, so what each holds has its own
+-- corner at the same spot then: map_overlay's on the map's. How far is in the units of what is scrolled.
+local function FollowView()
+  local ratio = WorldMapDetailFrame:GetEffectiveScale() / QuestHelper.map_overlay:GetEffectiveScale()
+  scrolf:SetHorizontalScroll(view_frame:GetHorizontalScroll() * ratio)
+  scrolf:SetVerticalScroll(view_frame:GetVerticalScroll() * ratio)
+end
+
+-- Once a map addon holds the map in a scroll frame, the crop covers that scroll frame and follows its scrolling, and
+-- map_overlay keeps to the map: anchored to it, as big as it, and scrolled to it (a scroll frame places what it holds by
+-- how far it is scrolled, and may go by its size rather than its anchors).
+local function FitOverlay()
+  local overlay = QuestHelper.map_overlay
+  local w, h = WorldMapButton:GetWidth(), WorldMapButton:GetHeight()
+  if not view_frame then
+    local view = ZoomScrollFrame()
+    if not view then return end
+    view_frame = view
+    scrolf:ClearAllPoints()
+    scrolf:SetAllPoints(view)
+    overlay:ClearAllPoints()
+    overlay:SetAllPoints(WorldMapButton)
+    overlay:SetWidth(w)
+    overlay:SetHeight(h)
+    hooksecurefunc(view, "SetHorizontalScroll", FollowView)
+    hooksecurefunc(view, "SetVerticalScroll", FollowView)
+    FollowView()
+  end
+  if overlay:GetWidth() ~= w then overlay:SetWidth(w) end
+  if overlay:GetHeight() ~= h then overlay:SetHeight(h) end
+end
+
+-- Whether things on a continent (Astrolabe's) show past the edges of the map shown, of continent c: on the land a map
+-- addon shows round a zone's or a continent's map, the map's own continent's. Not on the game's own map, and not things
+-- on another continent, which Astrolabe puts where they are on the map of the whole world: out at sea for the land shown.
+local function OnLandShown(continent, c)
+  return view_frame ~= nil and c ~= nil and c > 0 and continent == c
+end
+
+-- whether something at a spot of the map shown (0-1 across and down) shows there: on the map, or on the land round it
+local function ShowsAt(continent, x, y, c)
+  if not (x and y) then return false end
+  return (x > 0 and x <= 1 and y > 0 and y <= 1) or OnLandShown(continent, c)
+end
+
+-- An icon put on the map shown at a spot of the world (Astrolabe's continent, zone and 0-1 position on that zone), or
+-- hidden where it doesn't show. On the game's own map this is Astrolabe's PlaceIconOnWorldMap, which shows only what is
+-- on the map; with a map addon's view an icon also shows on the land round the map.
+local function PlaceIcon(icon, continent, zone, x, y)
+  FitOverlay()
+  local astrolabe, overlay = QuestHelper.Astrolabe, QuestHelper.map_overlay
+  if not view_frame then
+    return astrolabe:PlaceIconOnWorldMap(overlay, icon, continent, zone, x, y)
+  end
+  local c, z = astrolabe:GetCurrentVirtualMapCZ()
+  local nx, ny
+  if continent and x and y then
+    nx, ny = astrolabe:TranslateWorldMapPosition(continent, zone, x, y, c, z)
+  end
+  if ShowsAt(continent, nx, ny, c) then
+    icon:ClearAllPoints()
+    icon:SetPoint("CENTER", overlay, "TOPLEFT", nx * overlay:GetWidth(), -ny * overlay:GetHeight())
+    icon:Show()
+  else
+    icon:Hide()
+  end
+  return nx, ny
 end
 
 local poi = {}
@@ -117,13 +150,15 @@ end
 
 local walker_loc
 
--- How far a map addon has zoomed the world map in, and the part of the map in view (from 0 to 1 across and down).
--- Zooming map addons (BetterMaps, Magnify and the like) put WorldMapDetailFrame in a scroll frame and scale it up
--- in there; with the game's own map nothing is zoomed and all of it is in view.
+-- How far a map addon has zoomed the world map in, and the part of the map in view (from 0 to 1 across and down, past
+-- that where the view goes past the map's edges). Zooming map addons (BetterMaps, Magnify and the like) put
+-- WorldMapDetailFrame in a scroll frame and scale it in there, up, or down where BetterMaps' free camera shows a zone's
+-- map smaller than the window; with the game's own map nothing is zoomed and all of it is in view.
+local MIN_ZOOM = 0.01
 local function MapView()
   local overlay = QuestHelper.map_overlay
-  local view = WorldMapDetailFrame and WorldMapDetailFrame:GetParent()
-  if not (view and view.GetObjectType and view:GetObjectType() == "ScrollFrame") then return 1, 0, 0, 1, 1 end
+  local view = ZoomScrollFrame()
+  if not view then return 1, 0, 0, 1, 1 end
   local oscale, vscale = overlay:GetEffectiveScale(), view:GetEffectiveScale()
   local ol, ot, ow, oh = overlay:GetLeft(), overlay:GetTop(), overlay:GetWidth(), overlay:GetHeight()
   local vl, vt, vw, vh = view:GetLeft(), view:GetTop(), view:GetWidth(), view:GetHeight()
@@ -132,7 +167,7 @@ local function MapView()
   end
   ow, oh = ow * oscale, oh * oscale
   local left, top = (vl * vscale - ol * oscale) / ow, (ot * oscale - vt * vscale) / oh
-  return math.max(oscale / vscale, 1), left, top, left + vw * vscale / ow, top + vh * vscale / oh
+  return math.max(oscale / vscale, MIN_ZOOM), left, top, left + vw * vscale / ow, top + vh * vscale / oh
 end
 
 -- one edge of a rectangle cutting down how far along a line is inside it (Liang-Barsky)
@@ -288,6 +323,7 @@ function QuestHelper:CreateWorldMapWalker()
   
   function walker:OnUpdate(elapsed)
     if poi_changed then self:RouteChanged() end   -- bzzzzt
+    FitOverlay()
     
     local out = 0
     
@@ -304,26 +340,35 @@ function QuestHelper:CreateWorldMapWalker()
       local last_x, last_y = self.frame.Astrolabe:TranslateWorldMapPosition(self.frame.c, self.frame.z, self.frame.x, self.frame.y, c, z)
       local remainder = self.phase
       
-      -- On a map a map addon has zoomed in on, the dots are as far apart on screen as on the whole map, and only the
-      -- part in view gets any (a dot's width round it, so none goes missing at its edge).
+      -- On a map a map addon has zoomed, the dots are as far apart on screen as on the whole map, and only the part in
+      -- view gets any (a dot's width round it, so none goes missing at its edge). Where the map addon shows the land
+      -- round the map, the route goes on over it past the map's edges; a stretch to or from another continent (a boat,
+      -- a portal) stops at the map's edges, as everything does on the game's own map.
       local zoom, view_l, view_t, view_r, view_b = MapView()
       local spacing = DOT_SPACING / zoom
       view_l, view_t, view_r, view_b = view_l - spacing, view_t - spacing, view_r + spacing, view_b + spacing
+      local map_l, map_t, map_r, map_b = math.max(view_l, 0), math.max(view_t, 0), math.min(view_r, 1), math.min(view_b, 1)
+      local last_continent = self.frame.c
       
       for i, pos in ipairs(points) do
-        local new_x, new_y = unpack(pos)
-        local x1, y1, x2, y2 = ClampLine(last_x, last_y, new_x, new_y)
-        last_x, last_y = new_x, new_y
+        local x1, y1, x2, y2 = last_x, last_y, pos[1], pos[2]
+        local on_land = OnLandShown(last_continent, c) and OnLandShown(pos.continent, c)
+        last_x, last_y, last_continent = x2, y2, pos.continent
         local next_leg = i <= (self.next_leg or 0)
         
-        if x1 then
+        if x1 and y1 and x2 and y2 then
           local len = math.sqrt((x1-x2)*(x1-x2)*16/9+(y1-y2)*(y1-y2))
           
           if len > 0.0001 then
             local interval = spacing/len
             local start = remainder*interval
             local p, last = start, -1
-            local first, upto = LineInView(x1, y1, x2, y2, view_l, view_t, view_r, view_b)
+            local first, upto
+            if on_land then
+              first, upto = LineInView(x1, y1, x2, y2, view_l, view_t, view_r, view_b)
+            else
+              first, upto = LineInView(x1, y1, x2, y2, map_l, map_t, map_r, map_b)
+            end
             if first then
               last = upto
               -- counted from the start of the line, so the dots don't slide along it as the view moves
@@ -382,6 +427,7 @@ function QuestHelper:CreateWorldMapWalker()
     end
     
     if self.frame.Astrolabe.WorldMapVisible then
+      FitOverlay()
       local points = self.points
       local cur = self.frame.pos
       
@@ -414,7 +460,7 @@ function QuestHelper:CreateWorldMapWalker()
         obj.travel_time = travel_time]]
         if i > 1 then -- skip the start location
           local t = self.frame:CreateTable()
-          t[1], t[2] = convertLocationToScreen(obj.loc, c, z)
+          t[1], t[2], t.continent = convertLocationToScreen(obj.loc, c, z)
           
           table.insert(points, t)
           
@@ -499,9 +545,9 @@ function QuestHelper:GetOverlapObjectives(obj)
       if o == obj then
         table.insert(list, o)
       else
-        local x, y = convertLocationToScreen(o.loc, c, z)
+        local x, y, continent = convertLocationToScreen(o.loc, c, z)
         
-        if x and y and x > 0 and y > 0 and x < 1 and y < 1 then
+        if ShowsAt(continent, x, y, c) then
           x, y = x*w, y*h
           
           if cx >= x-s and cy >= y-s and cx <= x+s and cy <= y+s then
@@ -674,7 +720,7 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
       self.dot:SetPoint("TOPLEFT", self, "TOPLEFT", 3*QuestHelper_Pref.scale, -3*QuestHelper_Pref.scale)
       self.dot:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -3*QuestHelper_Pref.scale, 3*QuestHelper_Pref.scale)
       
-      QuestHelper.Astrolabe:PlaceIconOnWorldMap(QuestHelper.map_overlay, self, convertLocation(objective.loc))
+      PlaceIcon(self, convertLocation(objective.loc))
       --QuestHelper.Astrolabe:PlaceIconOnWorldMap(QuestHelper.map_overlay, self, 0, 0, globx, globy)
     else
       self.objective = nil
@@ -725,6 +771,11 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
       local adjx, adjy = v[1], v[2]
       local x, y = convertRawToScreen(v.continent, v[1], v[2], c, z)
       --print("matchup", c, v.continent, x, y)
+      -- With a map addon's view round a zone's or continent's map, a piece on another continent would show out at sea
+      -- (on the game's own map the crop keeps it off the map).
+      if view_frame and c and c > 0 and not OnLandShown(v.continent, c) then
+        x, y = nil, nil
+      end
       if x and y then
         local lx, ly = convertRawToScreen(v.continent, adjx + v[3], adjy + v[4], c, z)
         local linemode, missing = false, not (lx and ly)
@@ -1035,7 +1086,7 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
   
   function icon:OnEvent()
     if self.objective then
-      QuestHelper.Astrolabe:PlaceIconOnWorldMap(QuestHelper.map_overlay, self, convertLocation(self.objective.loc))
+      PlaceIcon(self, convertLocation(self.objective.loc))
     else
       self.objective = nil
       self:Hide()
@@ -1080,7 +1131,7 @@ function QuestHelper:CreateWorldMapMinidad(objective, nxt)
       self.dot:SetAllPoints()
       self.dot:SetDrawLayer("BACKGROUND")
       
-      QuestHelper.Astrolabe:PlaceIconOnWorldMap(QuestHelper.map_overlay, self, QuestHelper.Astrolabe:FromAbsoluteContinentPosition(QuestHelper_ParentLookup[self.objective.p], self.objective.x, self.objective.y))
+      PlaceIcon(self, QuestHelper.Astrolabe:FromAbsoluteContinentPosition(QuestHelper_ParentLookup[self.objective.p], self.objective.x, self.objective.y))
     else
       self.objective = nil
       self:Hide()
@@ -1105,7 +1156,7 @@ function QuestHelper:CreateWorldMapMinidad(objective, nxt)
   
   function icon:OnEvent()
     if self.objective then
-      QuestHelper.Astrolabe:PlaceIconOnWorldMap(QuestHelper.map_overlay, self, QuestHelper.Astrolabe:FromAbsoluteContinentPosition(QuestHelper_ParentLookup[self.objective.p], self.objective.x, self.objective.y))
+      PlaceIcon(self, QuestHelper.Astrolabe:FromAbsoluteContinentPosition(QuestHelper_ParentLookup[self.objective.p], self.objective.x, self.objective.y))
     else
       self.objective = nil
       self:Hide()
