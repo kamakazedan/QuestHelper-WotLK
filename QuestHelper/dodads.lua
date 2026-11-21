@@ -10,12 +10,20 @@ local function convertLocation(p)
   return QuestHelper.Astrolabe:FromAbsoluteContinentPosition(p.c, p.x, p.y)
 end
 
--- also gives the continent the spot is on, Astrolabe's
+-- The continent a location is on, as the map has it (Astrolabe's: 1 Kalimdor, 2 Eastern Kingdoms, 3 Outland, 4
+-- Northrend, or an instance's own), from the zone it is in; nil for a location with no zone. A location's c is no help
+-- there: it is the plane its x and y are on, 0 for all of Kalimdor, Eastern Kingdoms and Northrend alike.
+local function ContinentOf(p)
+  local zone = p and p.p and QuestHelper_ZoneLookup[p.p]
+  return zone and zone[1]
+end
+
+-- also gives the continent the spot is on (ContinentOf)
 local function convertLocationToScreen(p, c, z)
   local pc, _, px, py = convertLocation(p)
   local ox, oy = QuestHelper.Astrolabe:TranslateWorldMapPosition(pc, 0, px, py, c, z)
   --QuestHelper:TextOut(string.format("%f/%f/%f to %f/%f/%f to %f/%f %f/%f", p.c, p.x, p.y, pc, px, py, c, z, ox, oy))
-  return ox, oy, pc
+  return ox, oy, ContinentOf(p)
 end
 
 local function convertRawToScreen(tc, x, y, c, z)
@@ -83,9 +91,10 @@ local function FitOverlay()
   if overlay:GetHeight() ~= h then overlay:SetHeight(h) end
 end
 
--- Whether things on a continent (Astrolabe's) show past the edges of the map shown, of continent c: on the land a map
--- addon shows round a zone's or a continent's map, the map's own continent's. Not on the game's own map, and not things
--- on another continent, which Astrolabe puts where they are on the map of the whole world: out at sea for the land shown.
+-- Whether things on a continent (ContinentOf's) show past the edges of the map shown, of continent c (Astrolabe's): on
+-- the land a map addon shows round a zone's or a continent's map, the map's own continent's. Not on the game's own map,
+-- and not things on another continent, which Astrolabe puts where they are on the map of the whole world: out at sea
+-- for the land shown. Nor things on no known continent.
 local function OnLandShown(continent, c)
   return view_frame ~= nil and c ~= nil and c > 0 and continent == c
 end
@@ -96,21 +105,22 @@ local function ShowsAt(continent, x, y, c)
   return (x > 0 and x <= 1 and y > 0 and y <= 1) or OnLandShown(continent, c)
 end
 
--- An icon put on the map shown at a spot of the world (Astrolabe's continent, zone and 0-1 position on that zone), or
--- hidden where it doesn't show. On the game's own map this is Astrolabe's PlaceIconOnWorldMap, which shows only what is
--- on the map; with a map addon's view an icon also shows on the land round the map.
-local function PlaceIcon(icon, continent, zone, x, y)
+-- An icon put on the map shown at a location, or hidden where it doesn't show. On the game's own map this is
+-- Astrolabe's PlaceIconOnWorldMap, which shows only what is on the map; with a map addon's view an icon also shows on
+-- the land round the map.
+local function PlaceIcon(icon, loc)
   FitOverlay()
   local astrolabe, overlay = QuestHelper.Astrolabe, QuestHelper.map_overlay
+  local plane, zone, x, y = convertLocation(loc)
   if not view_frame then
-    return astrolabe:PlaceIconOnWorldMap(overlay, icon, continent, zone, x, y)
+    return astrolabe:PlaceIconOnWorldMap(overlay, icon, plane, zone, x, y)
   end
   local c, z = astrolabe:GetCurrentVirtualMapCZ()
   local nx, ny
-  if continent and x and y then
-    nx, ny = astrolabe:TranslateWorldMapPosition(continent, zone, x, y, c, z)
+  if plane and x and y then
+    nx, ny = astrolabe:TranslateWorldMapPosition(plane, zone, x, y, c, z)
   end
-  if ShowsAt(continent, nx, ny, c) then
+  if ShowsAt(ContinentOf(loc), nx, ny, c) then
     icon:ClearAllPoints()
     icon:SetPoint("CENTER", overlay, "TOPLEFT", nx * overlay:GetWidth(), -ny * overlay:GetHeight())
     icon:Show()
@@ -688,9 +698,32 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
     QH_Hook(self, "OnUpdate", self.OnUpdate)
   end
   
+  -- The next objective's area taken off the map. OnUpdate draws it while this is the next objective's icon; a new
+  -- objective takes it off at once, as an icon that is hidden (its objective off the map) gets no OnUpdate to.
+  function icon:ClearLocalArea()
+    if self.local_triangle_list then
+      while #self.local_triangle_list > 0 do
+        ReleaseTriangle(table.remove(self.local_triangle_list))
+      end
+      QuestHelper:ReleaseTable(self.local_triangle_list)
+      self.local_triangle_list = nil
+    end
+    
+    if self.local_line_list then
+      while #self.local_line_list > 0 do
+        ReleaseLine(table.remove(self.local_line_list))
+      end
+      QuestHelper:ReleaseTable(self.local_line_list)
+      self.local_line_list = nil
+    end
+    
+    self.tri_c, self.tri_z = nil, nil
+  end
+  
   function icon:SetObjective(objective, nxt)
     self:SetHeight(20*QuestHelper_Pref.scale)
     self:SetWidth(20*QuestHelper_Pref.scale)
+    self:ClearLocalArea()
     
     if self.dot then
       QuestHelper:ReleaseTexture(self.dot)
@@ -720,7 +753,7 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
       self.dot:SetPoint("TOPLEFT", self, "TOPLEFT", 3*QuestHelper_Pref.scale, -3*QuestHelper_Pref.scale)
       self.dot:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -3*QuestHelper_Pref.scale, 3*QuestHelper_Pref.scale)
       
-      PlaceIcon(self, convertLocation(objective.loc))
+      PlaceIcon(self, objective.loc)
       --QuestHelper.Astrolabe:PlaceIconOnWorldMap(QuestHelper.map_overlay, self, 0, 0, globx, globy)
     else
       self.objective = nil
@@ -733,9 +766,15 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
   local triangle_r, triangle_g, triangle_b = 1.0, 0.3, 0
   local triangle_opacity = 0.6
   
-  function icon:CreateTriangles(solid, tritarget, tristartat, linetarget, linestartat, parent)
+  -- continent: the one the area's objective is on (ContinentOf), if known. With a map addon's view round a zone's or a
+  -- continent's map, an area on another continent is left out: it would show out at sea (on the game's own map the
+  -- crop keeps it off the map).
+  function icon:CreateTriangles(solid, tritarget, tristartat, linetarget, linestartat, parent, continent)
     local c, z = QuestHelper.Astrolabe:GetCurrentVirtualMapCZ()
     local thickness = AREA_LINE / MapView()
+    if continent and view_frame and c and c > 0 and continent ~= c then
+      return tristartat, linestartat
+    end
     
     local function maketriangle(ax, ay, bx, by, cx, cy)
       local tri = tritarget[tristartat]
@@ -771,11 +810,6 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
       local adjx, adjy = v[1], v[2]
       local x, y = convertRawToScreen(v.continent, v[1], v[2], c, z)
       --print("matchup", c, v.continent, x, y)
-      -- With a map addon's view round a zone's or continent's map, a piece on another continent would show out at sea
-      -- (on the game's own map the crop keeps it off the map).
-      if view_frame and c and c > 0 and not OnLandShown(v.continent, c) then
-        x, y = nil, nil
-      end
       if x and y then
         local lx, ly = convertRawToScreen(v.continent, adjx + v[3], adjy + v[4], c, z)
         local linemode, missing = false, not (lx and ly)
@@ -853,7 +887,7 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
       --print(v.cluster, v.cluster and v.cluster.solid)
       if v.cluster and v.cluster.solid then
         --print("solidified", #v.cluster.solid)
-        solids[v.cluster.solid] = true
+        solids[v.cluster.solid] = ContinentOf(v.loc) or false
       else
         local x, y = convertLocationToScreen(v.loc, c, z)
         if x and y then
@@ -883,7 +917,7 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
     local tid = 1
     local lid = 1
     
-    for k, _ in pairs(solids) do
+    for k, continent in pairs(solids) do
       if not self.triangle_list then
         self.triangle_list = QuestHelper:CreateTable()
       end
@@ -891,7 +925,7 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
         self.line_list = QuestHelper:CreateTable()
       end
       
-      tid, lid = self:CreateTriangles(k, self.triangle_list, tid, self.line_list, lid, QuestHelper.map_overlay)
+      tid, lid = self:CreateTriangles(k, self.triangle_list, tid, self.line_list, lid, QuestHelper.map_overlay, continent or nil)
     end
     -- call triangle maker here!
     
@@ -957,7 +991,7 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
           self.local_line_list = QuestHelper:CreateTable()
         end
         
-        local tid, lid = self:CreateTriangles(self.objective.cluster.solid, self.local_triangle_list, 1, self.local_line_list, 1, QuestHelper.map_overlay)
+        local tid, lid = self:CreateTriangles(self.objective.cluster.solid, self.local_triangle_list, 1, self.local_line_list, 1, QuestHelper.map_overlay, ContinentOf(self.objective.loc))
         
         if self.local_triangle_list then
           while #self.local_triangle_list >= tid do
@@ -974,23 +1008,7 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
       
       self.tri_c, self.tri_z = c, z
     else
-      if self.local_triangle_list then
-        while #self.local_triangle_list > 0 do
-          ReleaseTriangle(table.remove(self.local_triangle_list))
-        end
-        QuestHelper:ReleaseTable(self.local_triangle_list)
-        self.local_triangle_list = nil
-      end
-      
-      if self.local_line_list then
-        while #self.local_line_list > 0 do
-          ReleaseLine(table.remove(self.local_line_list))
-        end
-        QuestHelper:ReleaseTable(self.local_line_list)
-        self.local_line_list = nil
-      end
-      
-      self.tri_c, self.tri_z = nil, nil
+      self:ClearLocalArea()
     end
     
     if self.old_count > 0 then
@@ -1086,7 +1104,7 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
   
   function icon:OnEvent()
     if self.objective then
-      PlaceIcon(self, convertLocation(self.objective.loc))
+      PlaceIcon(self, self.objective.loc)
     else
       self.objective = nil
       self:Hide()
@@ -1126,14 +1144,16 @@ function QuestHelper:CreateWorldMapMinidad(objective, nxt)
     
     if objective then
       self.objective = objective
+      self.loc = {c = QuestHelper_ParentLookup[objective.p], x = objective.x, y = objective.y, p = objective.p}
       
       self.dot = QuestHelper:CreateIconTexture(self, 15)
       self.dot:SetAllPoints()
       self.dot:SetDrawLayer("BACKGROUND")
       
-      PlaceIcon(self, QuestHelper.Astrolabe:FromAbsoluteContinentPosition(QuestHelper_ParentLookup[self.objective.p], self.objective.x, self.objective.y))
+      PlaceIcon(self, self.loc)
     else
       self.objective = nil
+      self.loc = nil
       self:Hide()
     end
   end
@@ -1156,7 +1176,7 @@ function QuestHelper:CreateWorldMapMinidad(objective, nxt)
   
   function icon:OnEvent()
     if self.objective then
-      PlaceIcon(self, QuestHelper.Astrolabe:FromAbsoluteContinentPosition(QuestHelper_ParentLookup[self.objective.p], self.objective.x, self.objective.y))
+      PlaceIcon(self, self.loc)
     else
       self.objective = nil
       self:Hide()
