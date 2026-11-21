@@ -166,6 +166,7 @@ local function ReplotPath(progress)
         pathnode.loc.x = wp.x
         pathnode.loc.y = wp.y
         pathnode.loc.c = wp.c
+        pathnode.loc.p = wp.p  -- its zone: the world map goes by it for which continent a waypoint is on
         pathnode.ignore = true
         pathnode.map_desc = wp.map_desc
         pathnode.map_desc_chain = last_path[k + 1]
