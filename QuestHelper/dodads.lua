@@ -330,96 +330,151 @@ function QuestHelper:CreateWorldMapWalker()
   walker.frame = self
   walker.map_dodads = {}
   walker.used_map_dodads = 0
+  walker.ants = {}  -- the dots on the way to the objective you're being taken to; self.dots are the rest's
+  walker.dots_used, walker.ants_used = 0, 0
+  walker.view = {}  -- the map in view, as the dots were last laid for it
+  walker.route_version = 0
+  walker.since_march = 0
+  
+  -- dots of a pool not needed now: hidden, not given back (they are wanted again as the route or the view moves, and a
+  -- map addon that restyles the dots keeps its style on them)
+  local function HideDots(pool, from, upto)
+    for i = from, upto do
+      local dot = pool[i]
+      if dot and dot:IsShown() then dot:Hide() end
+    end
+  end
+  
+  -- Dots along stretches first to last of the route (stretch i runs from point i - 1 to point i, stretch 1 from where
+  -- you are), from the pool given, the first one phase of a gap along. Gives back how many of the pool it used.
+  function walker:LayDots(pool, first, last, phase, on_next_leg, view)
+    local points, w, h, spacing, c = self.points, view.w, view.h, view.spacing, view.c
+    local used, remainder = 0, phase
+    local last_x, last_y, last_continent
+    if first == 1 then
+      last_x, last_y, last_continent = view.px, view.py, self.frame.c
+    else
+      local pos = points[first - 1]
+      last_x, last_y, last_continent = pos[1], pos[2], pos.continent
+    end
+    
+    for i = first, last do
+      local pos = points[i]
+      local x1, y1, x2, y2 = last_x, last_y, pos[1], pos[2]
+      local on_land = OnLandShown(last_continent, c) and OnLandShown(pos.continent, c)
+      last_x, last_y, last_continent = x2, y2, pos.continent
+      
+      if x1 and y1 and x2 and y2 then
+        local len = math.sqrt((x1-x2)*(x1-x2)*16/9+(y1-y2)*(y1-y2))
+        
+        if len > 0.0001 then
+          local interval = spacing/len
+          local start = remainder*interval
+          local p, upto = start, -1
+          local from, to
+          if on_land then
+            from, to = LineInView(x1, y1, x2, y2, view.l, view.t, view.r, view.b)
+          else
+            from, to = LineInView(x1, y1, x2, y2, view.map_l, view.map_t, view.map_r, view.map_b)
+          end
+          if from then
+            upto = to
+            -- counted from the start of the line, so the dots don't slide along it as the view moves
+            if p < from then p = p + math.ceil((from - p)/interval)*interval end
+          end
+          
+          while p < 1 and p <= upto do
+            used = used + 1
+            local dot = pool[used]
+            if not dot then
+              dot = QuestHelper:CreateDotTexture(self)
+              dot:SetDrawLayer("BACKGROUND")
+              pool[used] = dot
+            elseif not dot:IsShown() then
+              dot:Show()
+            end
+            
+            -- coloured only when it changes, so a map addon that restyles the dots sees each change once
+            if dot.on_next_leg ~= on_next_leg then
+              dot.on_next_leg = on_next_leg
+              dot:SetVertexColor(unpack(on_next_leg and DOT_NEXT or DOT_LATER))
+            end
+            
+            dot:ClearAllPoints()
+            dot:SetPoint("CENTER", QuestHelper.map_overlay, "TOPLEFT", x1*w*(1-p)+x2*w*p, y1*h*(1-p)+y2*h*p)
+            
+            p = p + interval
+          end
+          
+          -- the next stretch carries on from where this one's dots would have ended, whatever part of it was in view
+          remainder = (start + math.max(math.ceil((1 - start)/interval), 0)*interval - 1)/interval
+        end
+      end
+    end
+    return used
+  end
+  
+  -- Putting hundreds of dots in a new place every frame was most of what a long route cost the map to draw. So only the
+  -- way to the objective you're being taken to marches along, redrawn thirty times a second at most; the rest of the
+  -- route stands still, its dots placed again only when the route, the map or the view of it changes.
+  local MARCH_EVERY = 1 / 30
   
   function walker:OnUpdate(elapsed)
     if poi_changed then self:RouteChanged() end   -- bzzzzt
     FitOverlay()
     
-    local out = 0
-    
-    if QuestHelper_Pref.show_ants then
-      local points = self.points
-      
-      self.phase = self.phase + elapsed * 0.66
-      while self.phase > 1 do self.phase = self.phase - 1 end
-      
-      local w, h = QuestHelper.map_overlay:GetWidth(), -QuestHelper.map_overlay:GetHeight()
-      
-      local c, z = QuestHelper.Astrolabe:GetCurrentVirtualMapCZ()
-      
-      local last_x, last_y = self.frame.Astrolabe:TranslateWorldMapPosition(self.frame.c, self.frame.z, self.frame.x, self.frame.y, c, z)
-      local remainder = self.phase
-      
-      -- On a map a map addon has zoomed, the dots are as far apart on screen as on the whole map, and only the part in
-      -- view gets any (a dot's width round it, so none goes missing at its edge). Where the map addon shows the land
-      -- round the map, the route goes on over it past the map's edges; a stretch to or from another continent (a boat,
-      -- a portal) stops at the map's edges, as everything does on the game's own map.
-      local zoom, view_l, view_t, view_r, view_b = MapView()
-      local spacing = DOT_SPACING / zoom
-      view_l, view_t, view_r, view_b = view_l - spacing, view_t - spacing, view_r + spacing, view_b + spacing
-      local map_l, map_t, map_r, map_b = math.max(view_l, 0), math.max(view_t, 0), math.min(view_r, 1), math.min(view_b, 1)
-      local last_continent = self.frame.c
-      
-      for i, pos in ipairs(points) do
-        local x1, y1, x2, y2 = last_x, last_y, pos[1], pos[2]
-        local on_land = OnLandShown(last_continent, c) and OnLandShown(pos.continent, c)
-        last_x, last_y, last_continent = x2, y2, pos.continent
-        local next_leg = i <= (self.next_leg or 0)
-        
-        if x1 and y1 and x2 and y2 then
-          local len = math.sqrt((x1-x2)*(x1-x2)*16/9+(y1-y2)*(y1-y2))
-          
-          if len > 0.0001 then
-            local interval = spacing/len
-            local start = remainder*interval
-            local p, last = start, -1
-            local first, upto
-            if on_land then
-              first, upto = LineInView(x1, y1, x2, y2, view_l, view_t, view_r, view_b)
-            else
-              first, upto = LineInView(x1, y1, x2, y2, map_l, map_t, map_r, map_b)
-            end
-            if first then
-              last = upto
-              -- counted from the start of the line, so the dots don't slide along it as the view moves
-              if p < first then p = p + math.ceil((first - p)/interval)*interval end
-            end
-            
-            while p < 1 and p <= last do
-              out = out + 1
-              local dot = self.dots[out]
-              if not dot then
-                dot = QuestHelper:CreateDotTexture(self)
-                dot:SetDrawLayer("BACKGROUND")
-                self.dots[out] = dot
-              elseif not dot:IsShown() then
-                dot:Show()
-              end
-              
-              -- coloured only when it changes, so a map addon that restyles the dots sees each change once
-              if dot.on_next_leg ~= next_leg then
-                dot.on_next_leg = next_leg
-                dot:SetVertexColor(unpack(next_leg and DOT_NEXT or DOT_LATER))
-              end
-              
-              dot:ClearAllPoints()
-              dot:SetPoint("CENTER", QuestHelper.map_overlay, "TOPLEFT", x1*w*(1-p)+x2*w*p, y1*h*(1-p)+y2*h*p)
-              
-              p = p + interval
-            end
-            
-            -- the next line carries on from where this one's dots would have ended, whatever part of it was in view
-            remainder = (start + math.max(math.ceil((1 - start)/interval), 0)*interval - 1)/interval
-          end
-        end
-      end
+    if not QuestHelper_Pref.show_ants then
+      HideDots(self.dots, 1, self.dots_used)
+      HideDots(self.ants, 1, self.ants_used)
+      self.dots_used, self.ants_used, self.laid_points = 0, 0, nil
+      return
     end
     
-    -- dots not needed now are hidden, not given back: they are wanted again as the route or the view moves, and a map
-    -- addon that restyles the dots keeps its style on them
-    for i = out + 1, #self.dots do
-      local dot = self.dots[i]
-      if dot:IsShown() then dot:Hide() end
+    self.phase = (self.phase + elapsed * 0.66) % 1
+    self.since_march = self.since_march + elapsed
+    
+    -- On a map a map addon has zoomed, the dots are as far apart on screen as on the whole map, and only the part in
+    -- view gets any (a dot's width round it, so none goes missing at its edge). Where the map addon shows the land
+    -- round the map, the route goes on over it past the map's edges; a stretch to or from another continent (a boat,
+    -- a portal) stops at the map's edges, as everything does on the game's own map.
+    local view = self.view
+    local c, z = QuestHelper.Astrolabe:GetCurrentVirtualMapCZ()
+    local w, h = QuestHelper.map_overlay:GetWidth(), -QuestHelper.map_overlay:GetHeight()
+    local zoom, view_l, view_t, view_r, view_b = MapView()
+    local moved = view.c ~= c or view.z ~= z or view.w ~= w or view.h ~= h or view.zoom ~= zoom
+      or view.vl ~= view_l or view.vt ~= view_t or view.vr ~= view_r or view.vb ~= view_b
+    if moved then
+      view.c, view.z, view.w, view.h, view.zoom = c, z, w, h, zoom
+      view.vl, view.vt, view.vr, view.vb = view_l, view_t, view_r, view_b
+      local spacing = DOT_SPACING / zoom
+      view.spacing = spacing
+      view.l, view.t, view.r, view.b = view_l - spacing, view_t - spacing, view_r + spacing, view_b + spacing
+      view.map_l, view.map_t = math.max(view.l, 0), math.max(view.t, 0)
+      view.map_r, view.map_b = math.min(view.r, 1), math.min(view.b, 1)
+    end
+    
+    local px, py = self.frame.Astrolabe:TranslateWorldMapPosition(self.frame.c, self.frame.z, self.frame.x, self.frame.y, c, z)
+    local walked = view.px ~= px or view.py ~= py or view.pc ~= self.frame.c
+    view.px, view.py, view.pc = px, py, self.frame.c
+    
+    local points = self.points
+    local lead = math.min(self.next_leg or 0, #points)  -- stretches 1 to lead are the way to the next objective
+    local rerouted = self.laid_points ~= points or self.laid_version ~= self.route_version or self.laid_lead ~= lead
+    
+    -- the rest of the route (from where you are too, when it isn't taking you anywhere)
+    if moved or rerouted or (lead == 0 and walked) then
+      self.laid_points, self.laid_version, self.laid_lead = points, self.route_version, lead
+      local used = lead < #points and self:LayDots(self.dots, lead + 1, #points, 0, false, view) or 0
+      HideDots(self.dots, used + 1, self.dots_used)
+      self.dots_used = used
+    end
+    
+    -- the way to the next objective, marching
+    if moved or rerouted or self.since_march >= MARCH_EVERY then
+      self.since_march = 0
+      local used = lead > 0 and self:LayDots(self.ants, 1, lead, self.phase, true, view) or 0
+      HideDots(self.ants, used + 1, self.ants_used)
+      self.ants_used = used
     end
   end
   
@@ -479,6 +534,7 @@ function QuestHelper:CreateWorldMapWalker()
         --QuestHelper:TextOut(string.format("%s/%s/%s to %s/%s", tostring(obj.c), tostring(obj.x), tostring(obj.y), tostring(t[1]), tostring(t[2])))
       end
       --lotsup = false
+      self.route_version = self.route_version + 1  -- its dots to be laid again
       
       local cur_dodad = 1
       for i = 2, #self.route do -- 2 because we're skipping the player
@@ -876,6 +932,7 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
   end
   
   function icon:SetGlow(list)
+    self.glow_applied = nil  -- what's drawn now is coloured next time round
     local w, h = QuestHelper.map_overlay:GetWidth(), QuestHelper.map_overlay:GetHeight()
     local c, z = QuestHelper.Astrolabe:GetCurrentVirtualMapCZ()
     local zw = QuestHelper.Astrolabe:GetZoneWidth(c, z)
@@ -1004,6 +1061,14 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
             ReleaseLine(table.remove(self.local_line_list))
           end
         end
+        
+        -- coloured once, as it's drawn (it used to be coloured all over again every frame)
+        for _, tri in ipairs(self.local_triangle_list) do
+          tri:SetVertexColor(triangle_b, triangle_g, triangle_r, triangle_opacity/2)
+        end
+        for _, line in ipairs(self.local_line_list) do
+          line:SetVertexColor(triangle_b, triangle_g, triangle_r, triangle_opacity)
+        end
       end
       
       self.tri_c, self.tri_z = c, z
@@ -1057,29 +1122,23 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
       end
     end
     
-    if self.triangle_list then
-      for _, tri in ipairs(self.triangle_list) do
-        tri:SetVertexColor(triangle_r, triangle_g, triangle_b, self.glow_pct*triangle_opacity/2)
+    -- the hover glow coloured only as it fades in or out
+    if self.glow_pct ~= self.glow_applied then
+      self.glow_applied = self.glow_pct
+      if self.triangle_list then
+        for _, tri in ipairs(self.triangle_list) do
+          tri:SetVertexColor(triangle_r, triangle_g, triangle_b, self.glow_pct*triangle_opacity/2)
+        end
       end
-    end
-    if self.line_list then
-      for _, tri in ipairs(self.line_list) do
-        tri:SetVertexColor(triangle_r, triangle_g, triangle_b, self.glow_pct*triangle_opacity)
+      if self.line_list then
+        for _, tri in ipairs(self.line_list) do
+          tri:SetVertexColor(triangle_r, triangle_g, triangle_b, self.glow_pct*triangle_opacity)
+        end
       end
-    end
-    if self.glow_list then
-      for _, tri in ipairs(self.glow_list) do
-        tri:SetVertexColor(triangle_r, triangle_g, triangle_b, self.glow_pct*triangle_opacity)
-      end
-    end
-    if self.local_triangle_list then
-      for _, tri in ipairs(self.local_triangle_list) do
-        tri:SetVertexColor(triangle_b, triangle_g, triangle_r, triangle_opacity/2)
-      end
-    end
-    if self.local_line_list then
-      for _, tri in ipairs(self.local_line_list) do
-        tri:SetVertexColor(triangle_b, triangle_g, triangle_r, triangle_opacity)
+      if self.glow_list then
+        for _, tri in ipairs(self.glow_list) do
+          tri:SetVertexColor(triangle_r, triangle_g, triangle_b, self.glow_pct*triangle_opacity)
+        end
       end
     end
   end
