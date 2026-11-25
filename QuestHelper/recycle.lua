@@ -315,7 +315,6 @@ end
 
 function QuestHelper:ReleaseTexture(tex)
   --[[ assert(type(tex) == "table") ]]
-  for i,t in ipairs(self.free_textures) do --[[ assert(t ~= tex) ]] end
   
   for key in pairs(tex) do
     -- Remove all keys except 0, which seems to hold some special data.

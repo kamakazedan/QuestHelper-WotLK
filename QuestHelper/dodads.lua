@@ -142,6 +142,7 @@ local DOT_LATER = { 0, 0, 0, 0.35 }
 local poi_dodads = {}
 
 function QH_POI_Reset()
+  if not poi[1] then return end  -- none to take off: nothing to draw again
   while poi[1] do
     QuestHelper:ReleaseTable(table.remove(poi))
   end
@@ -420,7 +421,19 @@ function QuestHelper:CreateWorldMapWalker()
   local MARCH_EVERY = 1 / 30
   
   function walker:OnUpdate(elapsed)
-    if poi_changed then self:RouteChanged() end   -- bzzzzt
+    -- nothing to draw with the map shut: whatever changed meanwhile is drawn as it opens
+    if not self.frame.Astrolabe.WorldMapVisible then return end
+    
+    -- The route and the icons are drawn again only when something they show has changed: the route (RouteChanged is
+    -- handed the new one), the map shown (WORLD_MAP_UPDATE), the quest givers marked on it, the icons' size. With the
+    -- map open they used to be drawn all over again every frame, and the next objective's area worked out afresh with
+    -- them: the mark that the quest givers had changed was put up as the map opened and never taken down.
+    if self.route then
+      local c, z = QuestHelper.Astrolabe:GetCurrentVirtualMapCZ()
+      if poi_changed or self.drawn_stale or self.drawn_c ~= c or self.drawn_z ~= z or self.drawn_scale ~= QuestHelper_Pref.scale then
+        self:RouteChanged()
+      end
+    end
     FitOverlay()
     
     if not QuestHelper_Pref.show_ants then
@@ -496,9 +509,11 @@ function QuestHelper:CreateWorldMapWalker()
       local points = self.points
       local cur = self.frame.pos
       
-      while #points > 0 do self.frame:ReleaseTable(table.remove(points)) end
-      
       local c, z = QuestHelper.Astrolabe:GetCurrentVirtualMapCZ()
+      
+      -- what it's drawn for, so OnUpdate can tell when it wants drawing again
+      self.drawn_c, self.drawn_z, self.drawn_scale, self.drawn_stale = c, z, QuestHelper_Pref.scale, false
+      poi_changed = false
       
       -- how many of the stretches between the points lead to the next objective: the waypoints on the way (the ignored
       -- points) and the stretch to the objective itself
@@ -510,6 +525,9 @@ function QuestHelper:CreateWorldMapWalker()
         end
       end
       
+      -- The route's points on the map shown, each changed only if it has moved: the same route is handed over again
+      -- every second you walk (it starts from where you are), and its dots are laid again only if a point moved.
+      local changed, n = false, 0
       for i, obj in ipairs(self.route) do
         --QuestHelper:TextOut(string.format("%s", tostring(obj)))
         
@@ -524,17 +542,31 @@ function QuestHelper:CreateWorldMapWalker()
         travel_time = travel_time + 60
         obj.travel_time = travel_time]]
         if i > 1 then -- skip the start location
-          local t = self.frame:CreateTable()
-          t[1], t[2], t.continent = convertLocationToScreen(obj.loc, c, z)
-          
-          table.insert(points, t)
+          n = n + 1
+          local x, y, continent = convertLocationToScreen(obj.loc, c, z)
+          local t = points[n]
+          if not t then
+            t = self.frame:CreateTable("route point")
+            points[n] = t
+            changed = true
+          end
+          if t[1] ~= x or t[2] ~= y or t.continent ~= continent then
+            t[1], t[2], t.continent = x, y, continent
+            changed = true
+          end
           
           --if lotsup then print(obj.ignore, obj.loc.x, obj.loc.y, obj.loc.c) end
         end
         --QuestHelper:TextOut(string.format("%s/%s/%s to %s/%s", tostring(obj.c), tostring(obj.x), tostring(obj.y), tostring(t[1]), tostring(t[2])))
       end
       --lotsup = false
-      self.route_version = self.route_version + 1  -- its dots to be laid again
+      while #points > n do
+        self.frame:ReleaseTable(table.remove(points))
+        changed = true
+      end
+      if changed then
+        self.route_version = self.route_version + 1  -- its dots to be laid again
+      end
       
       local cur_dodad = 1
       for i = 2, #self.route do -- 2 because we're skipping the player
@@ -570,6 +602,8 @@ function QuestHelper:CreateWorldMapWalker()
       for i = #poi + 1, #poi_dodads do
         poi_dodads[i]:SetPosition()
       end
+    else
+      self.drawn_stale = true  -- drawn as the map opens
     end
   end
   
@@ -776,39 +810,46 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
     self.tri_c, self.tri_z = nil, nil
   end
   
+  -- Drawn again only as far as it has changed: the route is handed over again every second you walk, and the icons
+  -- with it, mostly the same objectives with the same pictures.
   function icon:SetObjective(objective, nxt)
-    self:SetHeight(20*QuestHelper_Pref.scale)
-    self:SetWidth(20*QuestHelper_Pref.scale)
-    self:ClearLocalArea()
-    
-    if self.dot then
-      QuestHelper:ReleaseTexture(self.dot)
-      self.dot = nil
+    local scale = QuestHelper_Pref.scale
+    if self.drawn_size ~= scale then
+      self.drawn_size = scale
+      self:SetHeight(20*scale)
+      self:SetWidth(20*scale)
     end
     
-    if self.bg then
-      QuestHelper:ReleaseTexture(self.bg)
-      self.bg = nil
+    -- the next objective's area goes with its objective: kept, drawn already, while the icon shows the same one
+    if objective ~= self.objective then self:ClearLocalArea() end
+    
+    local bg_id = objective and (nxt and 13 or objective.map_highlight and 14 or 16)
+    local dot_id = objective and (objective.icon_id or 8)
+    if not (objective and self.bg and self.bg.icon_id == bg_id and self.dot and self.dot.icon_id == dot_id and self.dot_scale == scale) then
+      if self.dot then
+        QuestHelper:ReleaseTexture(self.dot)
+        self.dot = nil
+      end
+      
+      if self.bg then
+        QuestHelper:ReleaseTexture(self.bg)
+        self.bg = nil
+      end
+      
+      if objective then
+        self.bg = QuestHelper:CreateIconTexture(self, bg_id)
+        self.dot = QuestHelper:CreateIconTexture(self, dot_id)
+        self.dot_scale = scale
+        
+        self.bg:SetDrawLayer("BACKGROUND")
+        self.bg:SetAllPoints()
+        self.dot:SetPoint("TOPLEFT", self, "TOPLEFT", 3*scale, -3*scale)
+        self.dot:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -3*scale, 3*scale)
+      end
     end
     
     if objective then
       self.objective = objective
-      
-      if nxt then
-        self.bg = QuestHelper:CreateIconTexture(self, 13)
-      elseif objective.map_highlight then
-        self.bg = QuestHelper:CreateIconTexture(self, 14)
-      else
-        self.bg = QuestHelper:CreateIconTexture(self, 16)
-      end
-      
-      self.dot = QuestHelper:CreateIconTexture(self, objective.icon_id or 8)
-      
-      self.bg:SetDrawLayer("BACKGROUND")
-      self.bg:SetAllPoints()
-      self.dot:SetPoint("TOPLEFT", self, "TOPLEFT", 3*QuestHelper_Pref.scale, -3*QuestHelper_Pref.scale)
-      self.dot:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -3*QuestHelper_Pref.scale, 3*QuestHelper_Pref.scale)
-      
       PlaceIcon(self, objective.loc)
       --QuestHelper.Astrolabe:PlaceIconOnWorldMap(QuestHelper.map_overlay, self, 0, 0, globx, globy)
     else
