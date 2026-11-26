@@ -133,11 +133,12 @@ end
 local poi = {}
 local poi_changed = false
 
--- The route's dots: twice as close together as 1.4.1 drew them, and green on the way to the objective you are being
--- taken to (through any flight masters, portals or zone borders on the way), the faint black of 1.4.1 after it.
+-- The route's dots: only the way to the objective you are being taken to, in green (through any flight masters,
+-- portals or zone borders on the way), twice as close together as 1.4.1 drew them. The rest of the route isn't drawn:
+-- 1.4.1's faint black dots along all of it crossed and knotted on a map with many quests. The icons of the next places
+-- on it are numbered instead (walker:NumberStops).
 local DOT_SPACING = .0125
 local DOT_NEXT = { 0.25, 1, 0.25, 0.8 }
-local DOT_LATER = { 0, 0, 0, 0.35 }
 
 local poi_dodads = {}
 
@@ -325,14 +326,13 @@ function QuestHelper:CreateWorldMapWalker()
   walker:Show()
   
   walker.phase = 0.0
-  walker.dots = {}
   walker.points = {}
   walker.origin = {}
   walker.frame = self
   walker.map_dodads = {}
   walker.used_map_dodads = 0
-  walker.ants = {}  -- the dots on the way to the objective you're being taken to; self.dots are the rest's
-  walker.dots_used, walker.ants_used = 0, 0
+  walker.ants = {}  -- the dots on the way to the objective you're being taken to, the only ones drawn
+  walker.ants_used = 0
   walker.view = {}  -- the map in view, as the dots were last laid for it
   walker.route_version = 0
   walker.since_march = 0
@@ -348,7 +348,7 @@ function QuestHelper:CreateWorldMapWalker()
   
   -- Dots along stretches first to last of the route (stretch i runs from point i - 1 to point i, stretch 1 from where
   -- you are), from the pool given, the first one phase of a gap along. Gives back how many of the pool it used.
-  function walker:LayDots(pool, first, last, phase, on_next_leg, view)
+  function walker:LayDots(pool, first, last, phase, view)
     local points, w, h, spacing, c = self.points, view.w, view.h, view.spacing, view.c
     local used, remainder = 0, phase
     local last_x, last_y, last_continent
@@ -388,17 +388,13 @@ function QuestHelper:CreateWorldMapWalker()
             used = used + 1
             local dot = pool[used]
             if not dot then
+              -- coloured once, as it's made, so a map addon that restyles the dots sees its colour once
               dot = QuestHelper:CreateDotTexture(self)
               dot:SetDrawLayer("BACKGROUND")
+              dot:SetVertexColor(unpack(DOT_NEXT))
               pool[used] = dot
             elseif not dot:IsShown() then
               dot:Show()
-            end
-            
-            -- coloured only when it changes, so a map addon that restyles the dots sees each change once
-            if dot.on_next_leg ~= on_next_leg then
-              dot.on_next_leg = on_next_leg
-              dot:SetVertexColor(unpack(on_next_leg and DOT_NEXT or DOT_LATER))
             end
             
             dot:ClearAllPoints()
@@ -415,10 +411,35 @@ function QuestHelper:CreateWorldMapWalker()
     return used
   end
   
-  -- Putting hundreds of dots in a new place every frame was most of what a long route cost the map to draw. So only the
-  -- way to the objective you're being taken to marches along, redrawn thirty times a second at most; the rest of the
-  -- route stands still, its dots placed again only when the route, the map or the view of it changes.
+  -- The dots march along, put in their new places thirty times a second at most: putting dots in a new place every
+  -- frame was most of what the route cost the map to draw.
   local MARCH_EVERY = 1 / 30
+  
+  -- The next places on the route numbered on their icons, as the dots go no further than the first: 1 where they end,
+  -- then 2, 3 and on to 9 (by the tenth, the route has usually changed). Stops whose icons sit on top of each other are
+  -- one place with one number, on the first of them: quests handed in to one person, or a camp's worth with the map
+  -- zoomed out. A stop that can't be put on the map shown still takes its number, its icon hidden.
+  local NUMBERED_PLACES = 9
+  function walker:NumberStops()
+    local overlay = QuestHelper.map_overlay
+    local zoom = MapView()
+    local w, h = overlay:GetWidth(), overlay:GetHeight()
+    self.numbered_zoom, self.numbered_w, self.numbered_h = zoom, w, h
+    
+    local near = 10 * QuestHelper_Pref.scale / zoom  -- half an icon: a map addon keeps the icons one size on screen
+    local place, at_x, at_y = 0, nil, nil
+    for i = 1, self.used_map_dodads do
+      local dodad = self.map_dodads[i]
+      local x, y = dodad.at_x, dodad.at_y
+      if x and y then x, y = x * w, y * h end
+      if x and y and at_x and math.abs(x - at_x) <= near and math.abs(y - at_y) <= near then
+        dodad:SetStopNumber(nil)  -- the same place as the stop before it
+      else
+        place, at_x, at_y = place + 1, x, y
+        dodad:SetStopNumber(place <= NUMBERED_PLACES and place or nil)
+      end
+    end
+  end
   
   function walker:OnUpdate(elapsed)
     -- nothing to draw with the map shut: whatever changed meanwhile is drawn as it opens
@@ -436,10 +457,15 @@ function QuestHelper:CreateWorldMapWalker()
     end
     FitOverlay()
     
+    -- the icons numbered again as a map addon zooms in or out: which stops are one place is down to how close together
+    -- their icons are on screen
+    local zoom, view_l, view_t, view_r, view_b = MapView()
+    local ow, oh = QuestHelper.map_overlay:GetWidth(), QuestHelper.map_overlay:GetHeight()
+    if self.numbered_zoom ~= zoom or self.numbered_w ~= ow or self.numbered_h ~= oh then self:NumberStops() end
+    
     if not QuestHelper_Pref.show_ants then
-      HideDots(self.dots, 1, self.dots_used)
       HideDots(self.ants, 1, self.ants_used)
-      self.dots_used, self.ants_used, self.laid_points = 0, 0, nil
+      self.ants_used, self.laid_points = 0, nil
       return
     end
     
@@ -448,12 +474,11 @@ function QuestHelper:CreateWorldMapWalker()
     
     -- On a map a map addon has zoomed, the dots are as far apart on screen as on the whole map, and only the part in
     -- view gets any (a dot's width round it, so none goes missing at its edge). Where the map addon shows the land
-    -- round the map, the route goes on over it past the map's edges; a stretch to or from another continent (a boat,
+    -- round the map, the way goes on over it past the map's edges; a stretch to or from another continent (a boat,
     -- a portal) stops at the map's edges, as everything does on the game's own map.
     local view = self.view
     local c, z = QuestHelper.Astrolabe:GetCurrentVirtualMapCZ()
-    local w, h = QuestHelper.map_overlay:GetWidth(), -QuestHelper.map_overlay:GetHeight()
-    local zoom, view_l, view_t, view_r, view_b = MapView()
+    local w, h = ow, -oh
     local moved = view.c ~= c or view.z ~= z or view.w ~= w or view.h ~= h or view.zoom ~= zoom
       or view.vl ~= view_l or view.vt ~= view_t or view.vr ~= view_r or view.vb ~= view_b
     if moved then
@@ -466,26 +491,15 @@ function QuestHelper:CreateWorldMapWalker()
       view.map_r, view.map_b = math.min(view.r, 1), math.min(view.b, 1)
     end
     
-    local px, py = self.frame.Astrolabe:TranslateWorldMapPosition(self.frame.c, self.frame.z, self.frame.x, self.frame.y, c, z)
-    local walked = view.px ~= px or view.py ~= py or view.pc ~= self.frame.c
-    view.px, view.py, view.pc = px, py, self.frame.c
-    
+    -- the way to the next objective, from where you are, marching
+    view.px, view.py = self.frame.Astrolabe:TranslateWorldMapPosition(self.frame.c, self.frame.z, self.frame.x, self.frame.y, c, z)
     local points = self.points
     local lead = math.min(self.next_leg or 0, #points)  -- stretches 1 to lead are the way to the next objective
     local rerouted = self.laid_points ~= points or self.laid_version ~= self.route_version or self.laid_lead ~= lead
-    
-    -- the rest of the route (from where you are too, when it isn't taking you anywhere)
-    if moved or rerouted or (lead == 0 and walked) then
-      self.laid_points, self.laid_version, self.laid_lead = points, self.route_version, lead
-      local used = lead < #points and self:LayDots(self.dots, lead + 1, #points, 0, false, view) or 0
-      HideDots(self.dots, used + 1, self.dots_used)
-      self.dots_used = used
-    end
-    
-    -- the way to the next objective, marching
     if moved or rerouted or self.since_march >= MARCH_EVERY then
       self.since_march = 0
-      local used = lead > 0 and self:LayDots(self.ants, 1, lead, self.phase, true, view) or 0
+      self.laid_points, self.laid_version, self.laid_lead = points, self.route_version, lead
+      local used = lead > 0 and self:LayDots(self.ants, 1, lead, self.phase, view) or 0
       HideDots(self.ants, used + 1, self.ants_used)
       self.ants_used = used
     end
@@ -573,14 +587,16 @@ function QuestHelper:CreateWorldMapWalker()
         if not self.route[i].ignore or qh_hackery_show_all_map_nodes then
           local dodad = self.map_dodads[cur_dodad]
           if not dodad then
-            self.map_dodads[cur_dodad] = self.frame:CreateWorldMapDodad(self.route[i], i == 2)
+            dodad = self.frame:CreateWorldMapDodad(self.route[i], i == 2)
+            self.map_dodads[cur_dodad] = dodad
           else
-            self.map_dodads[cur_dodad]:SetObjective(self.route[i], i == 2)
+            dodad:SetObjective(self.route[i], i == 2)
           end
+          dodad.at_x, dodad.at_y = points[i - 1][1], points[i - 1][2]  -- where it is on the map shown, to number it
           
           if cur_dodad == 1 then
-            self.map_dodads[cur_dodad]:MarkAsNext(true)
-            self.next_item = self.map_dodads[cur_dodad]
+            dodad:MarkAsNext(true)
+            self.next_item = dodad
           end
           cur_dodad = cur_dodad + 1
         end
@@ -591,6 +607,7 @@ function QuestHelper:CreateWorldMapWalker()
       end end
 
       self.used_map_dodads = cur_dodad - 1
+      self:NumberStops()
       
       while #poi > #poi_dodads do
         table.insert(poi_dodads, self.frame:CreateWorldMapMinidad())
@@ -858,6 +875,43 @@ function QuestHelper:CreateWorldMapDodad(objective, nxt)
       self.next = false
       self:OnUpdate(0)
     end
+  end
+  
+  -- The number of the stop's place in the route (walker:NumberStops), or none. It's on a frame of its own drawn over
+  -- all the icons, so the icons of the stops after it, often on the same spot, don't cover it.
+  function icon:SetStopNumber(n)
+    local badge = self.badge
+    if not n then
+      if badge and badge:IsShown() then badge:Hide() end
+      return
+    end
+    
+    if not badge then
+      badge = CreateFrame("Frame", nil, self)
+      badge:SetWidth(1)
+      badge:SetHeight(1)
+      badge.text = badge:CreateFontString(nil, "OVERLAY")
+      badge.text:SetPoint("BOTTOMLEFT", badge, "BOTTOMLEFT")
+      badge.text:SetTextColor(1, 1, 1)
+      self.badge = badge
+    end
+    local level = self:GetFrameLevel() + 2
+    if badge:GetFrameLevel() ~= level then badge:SetFrameLevel(level) end
+    
+    -- at the icon's right, low down, as big as the icons are set to be
+    local scale = QuestHelper_Pref.scale
+    if badge.scale ~= scale then
+      badge.scale = scale
+      badge.text:SetFont(QuestHelper.font.sans, 12*scale, "OUTLINE")
+      badge:ClearAllPoints()
+      badge:SetPoint("BOTTOMLEFT", self, "BOTTOMRIGHT", -3*scale, -1*scale)
+    end
+    
+    if badge.n ~= n then
+      badge.n = n
+      badge.text:SetText(n)
+    end
+    if not badge:IsShown() then badge:Show() end
   end
   
   local triangle_r, triangle_g, triangle_b = 1.0, 0.3, 0
